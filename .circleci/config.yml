@@ -1,0 +1,50 @@
+version: 2.1
+
+orbs:
+  docker: circleci/docker@2.4.0
+
+jobs:
+  build-and-push:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+
+      - setup_remote_docker:
+          docker_layer_caching: true
+
+      - run:
+          name: Install QEMU for Multi-Arch Support
+          command: docker run --privileged --rm tonistiigi/binfmt --install all
+
+      - run:
+          name: Install Docker Buildx
+          command: |
+            mkdir -p ~/.docker/cli-plugins
+            curl -L "https://github.com/docker/buildx/releases/download/v0.11.2/buildx-v0.11.2.linux-amd64" -o ~/.docker/cli-plugins/docker-buildx
+            chmod +x ~/.docker/cli-plugins/docker-buildx
+            docker buildx version
+
+      - run:
+          name: Login to Docker Hub
+          command: |
+            echo "$DOCKERHUB_PASSWORD" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+
+      - run:
+          name: Build and Push Docker Image (ARM64)
+          command: |
+            docker buildx create --name mybuilder --use
+            
+            docker buildx build \
+              --platform linux/arm64 \
+              -t yehonatancohen/whatsapp-crm-backend:latest \
+              --push .
+
+workflows:
+  version: 2
+  build_pipeline:
+    jobs:
+      - build-and-push:
+          filters:
+            branches:
+              only: main

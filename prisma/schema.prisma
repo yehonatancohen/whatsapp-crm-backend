@@ -1,0 +1,273 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────
+
+enum Role {
+  ADMIN
+  USER
+}
+
+enum AccountStatus {
+  INITIALIZING
+  QR_READY
+  AUTHENTICATED
+  DISCONNECTED
+}
+
+enum WarmupLevel {
+  L1
+  L2
+  L3
+  L4
+  L5
+}
+
+enum CampaignType {
+  DIRECT_MESSAGE
+  GROUP_MESSAGE
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  RUNNING
+  PAUSED
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+enum MessageStatus {
+  PENDING
+  QUEUED
+  SENDING
+  SENT
+  DELIVERED
+  FAILED
+}
+
+enum WarmupActivityType {
+  MESSAGE_SENT
+  MESSAGE_RECEIVED
+  PROFILE_UPDATE
+  STATUS_POST
+}
+
+enum ActivityType {
+  ACCOUNT_CREATED
+  ACCOUNT_DELETED
+  ACCOUNT_CONNECTED
+  ACCOUNT_DISCONNECTED
+  CAMPAIGN_CREATED
+  CAMPAIGN_STARTED
+  CAMPAIGN_PAUSED
+  CAMPAIGN_COMPLETED
+  CAMPAIGN_FAILED
+  CAMPAIGN_CANCELLED
+  WARMUP_LEVEL_UP
+  WARMUP_ACTIVITY
+  CONTACT_IMPORTED
+  USER_REGISTERED
+  USER_LOGIN
+}
+
+// ─── Models ──────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role     @default(USER)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  accounts      Account[]
+  contactLists  ContactList[]
+  campaigns     Campaign[]
+  activityLogs  ActivityLog[]
+  refreshTokens RefreshToken[]
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Account {
+  id               String        @id @default(cuid())
+  label            String
+  phoneNumber      String?
+  pushName         String?
+  proxy            String?
+  status           AccountStatus @default(INITIALIZING)
+  warmupLevel      WarmupLevel   @default(L1)
+  warmupStartedAt  DateTime?
+  messagesSentToday Int          @default(0)
+  lastMessageAt    DateTime?
+  errorMessage     String?
+  isWarmupEnabled  Boolean       @default(false)
+  userId           String
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  warmupLogs       WarmupLog[]
+  activityLogs     ActivityLog[]
+  campaignMessages CampaignMessage[]
+
+  @@unique([userId, label])
+  @@index([userId])
+  @@index([status])
+  @@index([warmupLevel])
+}
+
+model Contact {
+  id          String   @id @default(cuid())
+  phoneNumber String   @unique
+  name        String?
+  tags        String[] @default([])
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  listEntries      ContactListEntry[]
+  campaignMessages CampaignMessage[]
+
+  @@index([tags], type: Gin)
+}
+
+model ContactList {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  userId      String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entries   ContactListEntry[]
+  campaigns Campaign[]
+
+  @@unique([userId, name])
+  @@index([userId])
+}
+
+model ContactListEntry {
+  contactId     String
+  contactListId String
+  addedAt       DateTime @default(now())
+
+  contact     Contact     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  contactList ContactList @relation(fields: [contactListId], references: [id], onDelete: Cascade)
+
+  @@id([contactId, contactListId])
+}
+
+model Campaign {
+  id                   String         @id @default(cuid())
+  name                 String
+  type                 CampaignType   @default(DIRECT_MESSAGE)
+  status               CampaignStatus @default(DRAFT)
+  messageTemplate      String
+  mediaUrl             String?
+  scheduledAt          DateTime?
+  startedAt            DateTime?
+  completedAt          DateTime?
+  messagesPerMinute    Int            @default(2)
+  dailyLimitPerAccount Int            @default(50)
+  totalMessages        Int            @default(0)
+  sentCount            Int            @default(0)
+  deliveredCount       Int            @default(0)
+  failedCount          Int            @default(0)
+  contactListId        String?
+  userId               String
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contactList  ContactList?      @relation(fields: [contactListId], references: [id], onDelete: SetNull)
+  messages     CampaignMessage[]
+  groups       CampaignGroup[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([scheduledAt])
+}
+
+model CampaignGroup {
+  id         String  @id @default(cuid())
+  groupJid   String
+  groupName  String?
+  campaignId String
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+}
+
+model CampaignMessage {
+  id           String        @id @default(cuid())
+  status       MessageStatus @default(PENDING)
+  resolvedText String?
+  errorMessage String?
+  sentAt       DateTime?
+  deliveredAt  DateTime?
+  campaignId   String
+  contactId    String?
+  accountId    String?
+  groupJid     String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact  Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  account  Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  @@index([campaignId, status])
+  @@index([accountId])
+}
+
+model WarmupLog {
+  id           String             @id @default(cuid())
+  activityType WarmupActivityType
+  details      String?
+  accountId    String
+  createdAt    DateTime           @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, createdAt])
+}
+
+model ActivityLog {
+  id        String       @id @default(cuid())
+  type      ActivityType
+  message   String
+  metadata  Json?
+  userId    String?
+  accountId String?
+  createdAt DateTime     @default(now())
+
+  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  account Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([type, createdAt])
+  @@index([createdAt])
+}
