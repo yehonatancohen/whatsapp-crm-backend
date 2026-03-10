@@ -2,7 +2,7 @@ import { prisma } from './shared/db';
 import { logger } from './shared/logger';
 import { redis } from './shared/redis';
 import { warmupSchedulerQueue } from './warmup/warmupQueue';
-import { createSchedulerWorker, createCycleWorker } from './warmup/warmupWorker';
+import { createSchedulerWorker } from './warmup/warmupWorker';
 import { resetDailyCounts } from './warmup/warmupService';
 
 async function start() {
@@ -16,9 +16,8 @@ async function start() {
   // ─── Register BullMQ workers ──────────────────────────────────────────────
 
   const schedulerWorker = createSchedulerWorker();
-  const cycleWorker = createCycleWorker();
 
-  logger.info('Warmup scheduler and cycle workers registered');
+  logger.info('Warmup scheduler worker registered');
 
   // ─── Add repeatable scheduler job (every 60 seconds) ──────────────────────
 
@@ -68,7 +67,6 @@ async function start() {
   const shutdown = async () => {
     logger.info('Worker shutting down...');
     await schedulerWorker.close();
-    await cycleWorker.close();
     await prisma.$disconnect();
     process.exit(0);
   };

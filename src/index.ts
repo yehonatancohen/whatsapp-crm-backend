@@ -20,6 +20,7 @@ import campaignsRouter from './campaigns/routes';
 
 // Services
 import { ClientManager } from './accounts/services/ClientManager';
+import { createCycleWorker } from './warmup/warmupWorker';
 
 const app = express();
 const httpServer = createServer(app);
@@ -92,9 +93,24 @@ async function start() {
   await manager.restoreFromDB();
   logger.info('Restored WhatsApp instances from database');
 
+  // Start warmup cycle worker (consumes jobs from the worker container's scheduler)
+  const cycleWorker = createCycleWorker();
+  logger.info('Warmup cycle worker registered');
+
   httpServer.listen(config.port, () => {
     logger.info(`Backend running on http://localhost:${config.port}`);
   });
+
+  // Graceful shutdown
+  const shutdown = async () => {
+    logger.info('API shutting down...');
+    await cycleWorker.close();
+    await prisma.$disconnect();
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }
 
 start().catch((err) => {
