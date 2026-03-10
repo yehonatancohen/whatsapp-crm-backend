@@ -29,7 +29,7 @@ initSocket(httpServer);
 
 // Middleware
 app.use(helmet());
-app.use(cors({ origin: config.corsOrigin }));
+app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(express.json());
 
 // Rate limiting
