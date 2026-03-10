@@ -90,7 +90,7 @@ services:
       - DOCKER_API_VERSION=1.44
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    command: --interval 60 parties247-api parties247-worker parties247-nginx
+    command: --interval 60 parties247-api parties247-worker parties247-nginx parties247-cloudflared
 
 volumes:
   wwebjs_auth:
