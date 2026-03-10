@@ -58,8 +58,8 @@ COPY --from=builder /app/dist ./dist
 COPY entrypoint.sh ./
 RUN chmod +x entrypoint.sh
 
-# Own the workdir by the non-root user
-RUN chown -R appuser:appuser /app
+# Ensure .wwebjs_auth dir exists and is owned by appuser
+RUN mkdir -p /app/.wwebjs_auth && chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 3001
