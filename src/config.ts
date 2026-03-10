@@ -2,7 +2,7 @@ export const config = {
   port: parseInt(process.env.PORT || '3001', 10),
   corsOrigin: process.env.CORS_ORIGIN
     ? process.env.CORS_ORIGIN.split(',').map(s => s.trim())
-    : ['http://localhost:5173', 'https://api.parties247.co.il', 'https://api.parties247.co.il/'],
+    : ['http://localhost:5173', 'https://api.parties247.co.il', 'https://api.parties247.co.il/', 'https://whatsapp-crm-frontend-plum.vercel.app'],
   nodeEnv: process.env.NODE_ENV || 'development',
 
   // Database
