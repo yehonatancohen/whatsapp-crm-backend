@@ -28,6 +28,7 @@ const httpServer = createServer(app);
 initSocket(httpServer);
 
 // Middleware
+app.set('trust proxy', 1);
 app.use(helmet());
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(express.json());

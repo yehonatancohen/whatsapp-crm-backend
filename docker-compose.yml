@@ -83,9 +83,11 @@ services:
       - nginx
 
   watchtower:
-    image: containrrr/watchtower
+    image: containrrr/watchtower:latest
     container_name: parties247-watchtower
     restart: unless-stopped
+    environment:
+      - DOCKER_API_VERSION=1.44
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     command: --interval 60 parties247-api parties247-worker parties247-nginx
