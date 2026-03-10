@@ -66,11 +66,9 @@ services:
       retries: 5
 
   nginx:
-    image: nginx:alpine
+    image: yehonatancohen/whatsapp-crm-nginx:latest
     container_name: parties247-nginx
     restart: unless-stopped
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - api
 
@@ -90,7 +88,7 @@ services:
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    command: --interval 60 parties247-api parties247-worker
+    command: --interval 60 parties247-api parties247-worker parties247-nginx
 
 volumes:
   wwebjs_auth:
