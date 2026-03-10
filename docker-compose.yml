@@ -9,7 +9,7 @@ services:
       - REDIS_URL=redis://redis:6379
       - JWT_SECRET=${JWT_SECRET}
       - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
-      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:5173}
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:5173,https://api.parties247.co.il,https://api.parties247.co.il/}
       - NODE_ENV=production
     volumes:
       - wwebjs_auth:/app/.wwebjs_auth
