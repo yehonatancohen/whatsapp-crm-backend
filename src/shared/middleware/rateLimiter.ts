@@ -8,6 +8,7 @@ export const authLimiter = rateLimit({
   max: 20,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
   message: { error: 'Too many requests, please try again later', code: 'RATE_LIMITED' },
   store: new RedisStore({
     sendCommand: (...args: string[]) => (redis as any).call(...args),
@@ -21,6 +22,7 @@ export const apiLimiter = rateLimit({
   max: 300,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false },
   message: { error: 'Too many requests, please try again later', code: 'RATE_LIMITED' },
   store: new RedisStore({
     sendCommand: (...args: string[]) => (redis as any).call(...args),
