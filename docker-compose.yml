@@ -69,20 +69,10 @@ services:
     image: yehonatancohen/whatsapp-crm-nginx:latest
     container_name: parties247-nginx
     restart: unless-stopped
+    ports:
+      - "8080:80"
     depends_on:
       - api
-
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: parties247-cloudflared
-    restart: unless-stopped
-    command: tunnel run
-    environment:
-      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      - nginx
 
   watchtower:
     image: containrrr/watchtower:latest
@@ -92,7 +82,7 @@ services:
       - DOCKER_API_VERSION=1.44
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    command: --interval 60 parties247-api parties247-worker parties247-nginx parties247-cloudflared
+    command: --interval 60 parties247-api parties247-worker parties247-nginx
 
 volumes:
   wwebjs_auth:
