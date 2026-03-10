@@ -11,8 +11,7 @@ jobs:
       - checkout
 
       - setup_remote_docker:
-          version: "24.0.7" # <-- ADD THIS LINE to bust the corrupted cache
-          docker_layer_caching: true
+          version: "24.0.7"
 
       - run:
           name: Install QEMU for Multi-Arch Support
