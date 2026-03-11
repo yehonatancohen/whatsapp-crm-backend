@@ -91,7 +91,10 @@ router.get('/:id/groups', async (req: Request, res: Response, next: NextFunction
       return;
     }
 
-    const groups = await instance.getGroups();
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Groups fetch timed out')), 90_000),
+    );
+    const groups = await Promise.race([instance.getGroups(), timeout]);
     res.json(groups);
   } catch (err) {
     next(err);
