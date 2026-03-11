@@ -2,12 +2,21 @@ import * as XLSX from 'xlsx';
 import { prisma } from '../../shared/db';
 import { logger } from '../../shared/logger';
 
+interface ImportErrorDetail {
+  row: number;
+  phone: string;
+  reason: string;
+}
+
 interface ImportResult {
   total: number;
   created: number;
   duplicates: number;
   errors: number;
+  errorDetails: ImportErrorDetail[];
 }
+
+const MAX_ERROR_DETAILS = 50;
 
 /** Normalize phone number: strip common separators, ensure digits only */
 function normalizePhone(raw: string): string | null {
@@ -32,6 +41,7 @@ export async function importFromBuffer(
   let created = 0;
   let duplicates = 0;
   let errors = 0;
+  const errorDetails: ImportErrorDetail[] = [];
 
   // Build a case-insensitive column lookup from the first row
   const columnKeys = rows.length > 0 ? Object.keys(rows[0]) : [];
@@ -45,18 +55,28 @@ export async function importFromBuffer(
 
   if (!phoneCol) {
     logger.error({ columns: columnKeys }, 'Import failed: no phone column found');
-    return { total: rows.length, created: 0, duplicates: 0, errors: rows.length };
+    return {
+      total: rows.length,
+      created: 0,
+      duplicates: 0,
+      errors: rows.length,
+      errorDetails: [{ row: 0, phone: '', reason: `No phone column found. Available columns: ${columnKeys.join(', ')}` }],
+    };
   }
 
   logger.info({ phoneCol, nameCol, totalRows: rows.length }, 'Import started');
 
-  for (const row of rows) {
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+    const row = rows[rowIndex];
     const rawPhone = String(row[phoneCol] ?? '').trim();
 
     const phone = normalizePhone(rawPhone);
     if (!phone) {
       logger.debug({ rawPhone }, 'Skipping row: invalid phone number');
       errors++;
+      if (errorDetails.length < MAX_ERROR_DETAILS) {
+        errorDetails.push({ row: rowIndex + 2, phone: rawPhone, reason: 'Invalid phone number format' });
+      }
       continue;
     }
 
@@ -79,9 +99,12 @@ export async function importFromBuffer(
       } else {
         logger.error({ err, phone }, 'Import row error');
         errors++;
+        if (errorDetails.length < MAX_ERROR_DETAILS) {
+          errorDetails.push({ row: rowIndex + 2, phone, reason: 'Database error' });
+        }
       }
     }
   }
 
-  return { total: rows.length, created, duplicates, errors };
+  return { total: rows.length, created, duplicates, errors, errorDetails };
 }

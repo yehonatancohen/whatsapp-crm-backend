@@ -11,14 +11,14 @@ import { NotFoundError, UnauthorizedError } from '../shared/errors';
 const router = Router();
 
 const registerSchema = z.object({
-  email: z.string().email(),
+  email: z.string().email('Please enter a valid email address'),
   password: z.string().min(8, 'Password must be at least 8 characters'),
-  name: z.string().min(1, 'Name is required').max(100),
+  name: z.string().min(1, 'Name is required').max(100, 'Name must be 100 characters or less'),
 });
 
 const loginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(1),
+  email: z.string().email('Please enter a valid email address'),
+  password: z.string().min(1, 'Password is required'),
 });
 
 const refreshSchema = z.object({
@@ -88,7 +88,7 @@ router.post(
 router.patch(
   '/profile',
   authenticate,
-  validate(z.object({ name: z.string().min(1).max(100) })),
+  validate(z.object({ name: z.string().min(1, 'Name is required').max(100, 'Name must be 100 characters or less') })),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = await prisma.user.update({
@@ -107,7 +107,7 @@ router.patch(
 router.patch(
   '/password',
   authenticate,
-  validate(z.object({ currentPassword: z.string(), newPassword: z.string().min(8) })),
+  validate(z.object({ currentPassword: z.string().min(1, 'Current password is required'), newPassword: z.string().min(8, 'New password must be at least 8 characters') })),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = await prisma.user.findUnique({ where: { id: req.user!.userId } });

@@ -38,24 +38,24 @@ const upload = multer({
 });
 
 const createContactSchema = z.object({
-  phoneNumber: z.string().min(7).max(15),
-  name: z.string().max(200).optional(),
+  phoneNumber: z.string().min(7, 'Phone number must be at least 7 digits').max(15, 'Phone number must be at most 15 digits'),
+  name: z.string().max(200, 'Name must be 200 characters or less').optional(),
   tags: z.array(z.string()).optional(),
 });
 
 const updateContactSchema = z.object({
-  name: z.string().max(200).optional(),
+  name: z.string().max(200, 'Name must be 200 characters or less').optional(),
   tags: z.array(z.string()).optional(),
   metadata: z.any().optional(),
 });
 
 const createListSchema = z.object({
-  name: z.string().min(1).max(100),
-  description: z.string().max(500).optional(),
+  name: z.string().min(1, 'List name is required').max(100, 'List name must be 100 characters or less'),
+  description: z.string().max(500, 'Description must be 500 characters or less').optional(),
 });
 
 const contactIdsSchema = z.object({
-  contactIds: z.array(z.string()).min(1),
+  contactIds: z.array(z.string()).min(1, 'At least one contact must be selected'),
 });
 
 // ─── Contacts CRUD ───

@@ -14,6 +14,7 @@ import {
   resumeCampaign,
   cancelCampaign,
   getCampaignProgress,
+  getCampaignFailures,
 } from './services/campaignService';
 
 const router = Router();
@@ -24,13 +25,13 @@ router.use(authenticate);
 // ─── Zod Schemas ────────────────────────────────────────────────────────────
 
 const createSchema = z.object({
-  name: z.string().min(1).max(200),
-  messageTemplate: z.string().min(1).max(5000),
+  name: z.string().min(1, 'Campaign name is required').max(200, 'Campaign name must be 200 characters or less'),
+  messageTemplate: z.string().min(1, 'Message template is required').max(5000, 'Message template must be 5000 characters or less'),
   type: z.enum(['DIRECT_MESSAGE', 'GROUP_MESSAGE']).optional(),
   contactListId: z.string().optional(),
-  scheduledAt: z.string().datetime().optional(),
-  messagesPerMinute: z.number().int().min(1).max(10).optional(),
-  dailyLimitPerAccount: z.number().int().min(1).max(200).optional(),
+  scheduledAt: z.string().datetime('Invalid date format').optional(),
+  messagesPerMinute: z.number().int('Must be a whole number').min(1, 'Minimum 1 message per minute').max(10, 'Maximum 10 messages per minute').optional(),
+  dailyLimitPerAccount: z.number().int('Must be a whole number').min(1, 'Minimum 1 message per day').max(200, 'Maximum 200 messages per day per account').optional(),
   groupJids: z.array(z.object({
     jid: z.string(),
     name: z.string().optional(),
@@ -38,13 +39,13 @@ const createSchema = z.object({
 });
 
 const updateSchema = z.object({
-  name: z.string().min(1).max(200).optional(),
-  messageTemplate: z.string().min(1).max(5000).optional(),
+  name: z.string().min(1, 'Campaign name is required').max(200, 'Campaign name must be 200 characters or less').optional(),
+  messageTemplate: z.string().min(1, 'Message template is required').max(5000, 'Message template must be 5000 characters or less').optional(),
   type: z.enum(['DIRECT_MESSAGE', 'GROUP_MESSAGE']).optional(),
   contactListId: z.string().optional(),
-  scheduledAt: z.string().datetime().optional(),
-  messagesPerMinute: z.number().int().min(1).max(10).optional(),
-  dailyLimitPerAccount: z.number().int().min(1).max(200).optional(),
+  scheduledAt: z.string().datetime('Invalid date format').optional(),
+  messagesPerMinute: z.number().int('Must be a whole number').min(1, 'Minimum 1 message per minute').max(10, 'Maximum 10 messages per minute').optional(),
+  dailyLimitPerAccount: z.number().int('Must be a whole number').min(1, 'Minimum 1 message per day').max(200, 'Maximum 200 messages per day per account').optional(),
 });
 
 // ─── Routes ─────────────────────────────────────────────────────────────────
@@ -75,6 +76,22 @@ router.get('/:id/progress', async (req: Request, res: Response, next: NextFuncti
   try {
     const progress = await getCampaignProgress(req.params.id);
     res.json(progress);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/campaigns/:id/failures
+router.get('/:id/failures', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 50;
+    const failures = await getCampaignFailures(
+      req.params.id,
+      req.user!.userId,
+      req.user!.role,
+      limit,
+    );
+    res.json(failures);
   } catch (err) {
     next(err);
   }

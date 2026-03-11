@@ -406,6 +406,36 @@ export async function cancelCampaign(campaignId: string, userId: string, role: s
   return updated;
 }
 
+/** Get failed messages for a campaign with their error reasons. */
+export async function getCampaignFailures(
+  campaignId: string,
+  userId: string,
+  role: string,
+  limit = 50,
+) {
+  await getOwnedCampaign(campaignId, userId, role);
+
+  const failures = await prisma.campaignMessage.findMany({
+    where: {
+      campaignId,
+      status: 'FAILED',
+    },
+    select: {
+      id: true,
+      errorMessage: true,
+      contact: {
+        select: { phoneNumber: true, name: true },
+      },
+      groupJid: true,
+      createdAt: true,
+    },
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+  });
+
+  return failures;
+}
+
 /** Get campaign progress stats. */
 export async function getCampaignProgress(campaignId: string): Promise<CampaignProgress> {
   const campaign = await prisma.campaign.findUnique({

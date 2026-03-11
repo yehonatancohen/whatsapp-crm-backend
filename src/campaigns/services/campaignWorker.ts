@@ -88,7 +88,7 @@ export function createCampaignProcessorWorker(): Worker {
           where: { id: message.id },
           data: {
             status: 'FAILED',
-            errorMessage: 'No eligible accounts available',
+            errorMessage: 'No eligible accounts — all accounts may have reached their daily limit or are disconnected',
           },
         });
 
@@ -122,12 +122,12 @@ export function createCampaignProcessorWorker(): Worker {
         const instance = manager.getInstanceById(account.id);
 
         if (!instance || instance.status !== 'AUTHENTICATED') {
-          throw new Error(`Account ${account.id} is not authenticated`);
+          throw new Error('Account is no longer connected to WhatsApp. Please reconnect it.');
         }
 
         const client = instance.getClient();
         if (!client) {
-          throw new Error(`No client available for account ${account.id}`);
+          throw new Error('Account has no active WhatsApp session. It may need to be reconnected.');
         }
 
         // Determine chat ID based on campaign type
@@ -135,13 +135,13 @@ export function createCampaignProcessorWorker(): Worker {
 
         if (campaign.type === 'GROUP_MESSAGE') {
           if (!message.groupJid) {
-            throw new Error('Message has no groupJid for GROUP_MESSAGE campaign');
+            throw new Error('Message is missing target group information');
           }
           chatId = message.groupJid;
         } else {
           const phoneNumber = message.contact?.phoneNumber;
           if (!phoneNumber) {
-            throw new Error('Contact has no phone number');
+            throw new Error('Contact does not have a valid phone number');
           }
           const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
           chatId = `${cleanPhone}@c.us`;
