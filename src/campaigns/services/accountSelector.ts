@@ -50,12 +50,11 @@ export async function selectAccount(
 
   const eligibleLevels = getEligibleLevels();
 
-  // Get all authenticated accounts for this user at eligible warmup levels
+  // Get all authenticated accounts for this user
   const accounts = await prisma.account.findMany({
     where: {
       userId: campaign.userId,
       status: 'AUTHENTICATED',
-      warmupLevel: { in: eligibleLevels },
       id: excludeAccountIds.length > 0 ? { notIn: excludeAccountIds } : undefined,
     },
     select: { id: true, userId: true },
