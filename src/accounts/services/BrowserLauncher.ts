@@ -9,7 +9,7 @@ const stealth = StealthPlugin();
 stealth.enabledEvasions.delete('iframe.contentWindow');
 puppeteer.use(stealth);
 
-export async function launchStealthBrowser(proxy?: string): Promise<Browser> {
+export async function launchStealthBrowser(proxy?: string, userDataDir?: string): Promise<Browser> {
   const args = [
     '--no-sandbox',
     '--disable-setuid-sandbox',
@@ -27,6 +27,7 @@ export async function launchStealthBrowser(proxy?: string): Promise<Browser> {
   const browser = await puppeteer.launch({
     headless: true,
     args,
+    userDataDir,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
   });
 

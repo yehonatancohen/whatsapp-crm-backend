@@ -1,3 +1,4 @@
+import path from 'path';
 import { Client, LocalAuth } from 'whatsapp-web.js';
 import type { Browser } from 'puppeteer';
 import { AccountStatus as PrismaAccountStatus } from '@prisma/client';
@@ -34,7 +35,10 @@ export class WhatsAppInstance {
 
   async initialize(): Promise<void> {
     try {
-      this.browser = await launchStealthBrowser(this.proxy);
+      // Use the same session directory that LocalAuth expects so the browser
+      // stores its profile data (IndexedDB, cookies) in the persistent volume.
+      const sessionDir = path.resolve('.wwebjs_auth', `session-${this.label}`);
+      this.browser = await launchStealthBrowser(this.proxy, sessionDir);
       const wsEndpoint = this.browser.wsEndpoint();
 
       this.client = new Client({
