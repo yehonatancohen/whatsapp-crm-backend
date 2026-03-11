@@ -21,6 +21,8 @@ import campaignsRouter from './campaigns/routes';
 // Services
 import { ClientManager } from './accounts/services/ClientManager';
 import { createCycleWorker } from './warmup/warmupWorker';
+import { createCampaignProcessorWorker, createCampaignSchedulerWorker } from './campaigns/services/campaignWorker';
+import { campaignSchedulerQueue } from './campaigns/campaignQueue';
 
 const app = express();
 const httpServer = createServer(app);
@@ -97,6 +99,16 @@ async function start() {
   const cycleWorker = createCycleWorker();
   logger.info('Warmup cycle worker registered');
 
+  // Start campaign workers (processor needs WhatsApp instances, so it runs here)
+  const campaignProcessor = createCampaignProcessorWorker();
+  const campaignScheduler = createCampaignSchedulerWorker();
+  await campaignSchedulerQueue.upsertJobScheduler(
+    'campaign-scheduler-repeat',
+    { every: 60_000 },
+    { name: 'campaign-tick' },
+  );
+  logger.info('Campaign workers registered');
+
   httpServer.listen(config.port, () => {
     logger.info(`Backend running on http://localhost:${config.port}`);
   });
@@ -105,6 +117,8 @@ async function start() {
   const shutdown = async () => {
     logger.info('API shutting down...');
     await cycleWorker.close();
+    await campaignProcessor.close();
+    await campaignScheduler.close();
 
     // Destroy all WhatsApp instances so sessions persist across restarts
     const allInstances = manager.getAllInstances();
