@@ -9,10 +9,10 @@ interface ImportResult {
   errors: number;
 }
 
-/** Normalize phone number: strip spaces, dashes, ensure no leading + */
+/** Normalize phone number: strip common separators, ensure digits only */
 function normalizePhone(raw: string): string | null {
-  const cleaned = raw.replace(/[\s\-()]/g, '');
-  // Must be numeric (optionally starting with +)
+  if (!raw) return null;
+  const cleaned = raw.replace(/[\s\-().\/]/g, '');
   const digits = cleaned.replace(/^\+/, '');
   if (!/^\d{7,15}$/.test(digits)) return null;
   return digits;
@@ -33,22 +33,34 @@ export async function importFromBuffer(
   let duplicates = 0;
   let errors = 0;
 
+  // Build a case-insensitive column lookup from the first row
+  const columnKeys = rows.length > 0 ? Object.keys(rows[0]) : [];
+  const findColumn = (candidates: string[]): string | undefined => {
+    const lower = candidates.map((c) => c.toLowerCase());
+    return columnKeys.find((k) => lower.includes(k.toLowerCase()));
+  };
+
+  const phoneCol = findColumn(['phone', 'phoneNumber', 'phone number', 'phone_number', 'mobile', 'number', 'tel', 'telephone']);
+  const nameCol = findColumn(['name', 'full name', 'fullName', 'full_name', 'contact name', 'contact_name']);
+
+  if (!phoneCol) {
+    logger.error({ columns: columnKeys }, 'Import failed: no phone column found');
+    return { total: rows.length, created: 0, duplicates: 0, errors: rows.length };
+  }
+
+  logger.info({ phoneCol, nameCol, totalRows: rows.length }, 'Import started');
+
   for (const row of rows) {
-    // Try common column names for phone
-    const rawPhone = String(
-      row['phone'] || row['Phone'] || row['phoneNumber'] || row['Phone Number'] ||
-      row['mobile'] || row['Mobile'] || row['number'] || row['Number'] || ''
-    ).trim();
+    const rawPhone = String(row[phoneCol] ?? '').trim();
 
     const phone = normalizePhone(rawPhone);
     if (!phone) {
+      logger.debug({ rawPhone }, 'Skipping row: invalid phone number');
       errors++;
       continue;
     }
 
-    const name = String(
-      row['name'] || row['Name'] || row['Full Name'] || row['fullName'] || ''
-    ).trim() || null;
+    const name = (nameCol ? String(row[nameCol] ?? '').trim() : '') || null;
 
     // Tags from comma-separated column
     const rawTags = String(row['tags'] || row['Tags'] || '').trim();
