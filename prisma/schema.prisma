@@ -111,17 +111,17 @@ model RefreshToken {
 }
 
 model Account {
-  id               String        @id @default(cuid())
-  label            String
-  phoneNumber      String?
-  pushName         String?
-  proxy            String?
-  status           AccountStatus @default(INITIALIZING)
-  errorMessage     String?
-  isWarmupEnabled  Boolean       @default(false)
-  userId           String
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  id              String        @id @default(cuid())
+  label           String
+  phoneNumber     String?
+  pushName        String?
+  proxy           String?
+  status          AccountStatus @default(INITIALIZING)
+  errorMessage    String?
+  isWarmupEnabled Boolean       @default(false)
+  userId          String
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
   user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   warmupLogs       WarmupLog[]
@@ -206,10 +206,10 @@ model Campaign {
   createdAt            DateTime       @default(now())
   updatedAt            DateTime       @updatedAt
 
-  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  contactList  ContactList?      @relation(fields: [contactListId], references: [id], onDelete: SetNull)
-  messages     CampaignMessage[]
-  groups       CampaignGroup[]
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contactList ContactList?      @relation(fields: [contactListId], references: [id], onDelete: SetNull)
+  messages    CampaignMessage[]
+  groups      CampaignGroup[]
 
   @@index([userId])
   @@index([status])
