@@ -204,6 +204,10 @@ export class ClientManager {
     return this.instances.get(accountId);
   }
 
+  getAllInstances(): WhatsAppInstance[] {
+    return Array.from(this.instances.values());
+  }
+
   async removeAccount(accountId: string, userId?: string): Promise<boolean> {
     // Verify ownership
     const account = await prisma.account.findFirst({

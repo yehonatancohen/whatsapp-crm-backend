@@ -3,6 +3,7 @@ services:
     image: yehonatancohen/whatsapp-crm-backend:latest
     container_name: parties247-api
     restart: unless-stopped
+    stop_grace_period: 30s
     environment:
       - PORT=3001
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/parties247

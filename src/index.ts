@@ -101,10 +101,16 @@ async function start() {
     logger.info(`Backend running on http://localhost:${config.port}`);
   });
 
-  // Graceful shutdown
+  // Graceful shutdown — destroy WhatsApp sessions so auth data is saved properly
   const shutdown = async () => {
     logger.info('API shutting down...');
     await cycleWorker.close();
+
+    // Destroy all WhatsApp instances so sessions persist across restarts
+    const allInstances = manager.getAllInstances();
+    logger.info({ count: allInstances.length }, 'Destroying WhatsApp instances');
+    await Promise.allSettled(allInstances.map((inst) => inst.destroy()));
+
     await prisma.$disconnect();
     process.exit(0);
   };
