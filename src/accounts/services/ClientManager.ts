@@ -128,6 +128,13 @@ export class ClientManager {
         },
       });
 
+      if (phoneNumber) {
+        const exists = await prisma.warmupProgress.findUnique({ where: { phoneNumber } });
+        if (!exists) {
+          await prisma.warmupProgress.create({ data: { phoneNumber } });
+        }
+      }
+
       await prisma.activityLog.create({
         data: {
           type: 'ACCOUNT_CONNECTED',
@@ -176,22 +183,38 @@ export class ClientManager {
       orderBy: { createdAt: 'desc' },
     });
 
-    return dbAccounts.map((acc) => {
-      const instance = this.instances.get(acc.id);
-      if (instance) return instance.toResponse();
+    return Promise.all(
+      dbAccounts.map(async (acc) => {
+        const instance = this.instances.get(acc.id);
+        
+        let warmupLevel = 'L1';
+        if (acc.phoneNumber) {
+          const progress = await prisma.warmupProgress.findUnique({
+            where: { phoneNumber: acc.phoneNumber },
+          });
+          if (progress) warmupLevel = progress.warmupLevel;
+        }
 
-      return {
-        id: acc.id,
-        label: acc.label,
-        status: acc.status as AccountStatusType,
-        qrCode: null,
-        error: acc.errorMessage,
-        phoneNumber: acc.phoneNumber || undefined,
-        pushName: acc.pushName || undefined,
-        warmupLevel: acc.warmupLevel,
-        isWarmupEnabled: acc.isWarmupEnabled,
-      };
-    });
+        if (instance) {
+          const res = instance.toResponse() as any;
+          res.warmupLevel = warmupLevel;
+          res.isWarmupEnabled = acc.isWarmupEnabled;
+          return res;
+        }
+
+        return {
+          id: acc.id,
+          label: acc.label,
+          status: acc.status as AccountStatusType,
+          qrCode: null,
+          error: acc.errorMessage,
+          phoneNumber: acc.phoneNumber || undefined,
+          pushName: acc.pushName || undefined,
+          warmupLevel,
+          isWarmupEnabled: acc.isWarmupEnabled,
+        };
+      })
+    );
   }
 
   getAuthenticatedInstances(): WhatsAppInstance[] {

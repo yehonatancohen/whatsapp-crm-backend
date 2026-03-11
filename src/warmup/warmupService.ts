@@ -66,26 +66,44 @@ async function getOwnedAccount(accountId: string, userId: string, role: string) 
   return account;
 }
 
-/** Get the warmup status for a single account. */
-export async function getWarmupStatus(accountId: string): Promise<WarmupStatus> {
+export async function getAccountProgress(accountId: string) {
   const account = await prisma.account.findUnique({ where: { id: accountId } });
   if (!account) throw new NotFoundError('Account');
 
-  const levelConfig = getLevelConfig(account.warmupLevel);
+  let progress = null;
+  if (account.phoneNumber) {
+    progress = await prisma.warmupProgress.findUnique({ where: { phoneNumber: account.phoneNumber } });
+    if (!progress) {
+      progress = await prisma.warmupProgress.create({ data: { phoneNumber: account.phoneNumber } });
+    }
+  }
+
+  return { account, progress };
+}
+
+/** Get the warmup status for a single account. */
+export async function getWarmupStatus(accountId: string): Promise<WarmupStatus> {
+  const { account, progress } = await getAccountProgress(accountId);
+
+  const level = progress ? progress.warmupLevel : 'L1';
+  const warmupStartedAt = progress ? progress.warmupStartedAt : null;
+  const messagesSentToday = progress ? progress.messagesSentToday : 0;
+
+  const levelConfig = getLevelConfig(level);
   const totalMessagesSent = await getTotalMessagesSent(accountId);
-  const daysAtCurrentLevel = getDaysAtLevel(account.warmupStartedAt);
+  const daysAtCurrentLevel = getDaysAtLevel(warmupStartedAt);
 
   return {
     accountId: account.id,
-    level: account.warmupLevel,
+    level,
     isWarmupEnabled: account.isWarmupEnabled,
-    warmupStartedAt: account.warmupStartedAt,
-    messagesSentToday: account.messagesSentToday,
-    lastMessageAt: account.lastMessageAt,
+    warmupStartedAt,
+    messagesSentToday,
+    lastMessageAt: progress ? progress.lastMessageAt : null,
     levelConfig,
     totalMessagesSent,
     daysAtCurrentLevel,
-    nextLevel: getNextLevel(account.warmupLevel),
+    nextLevel: getNextLevel(level),
   };
 }
 
@@ -96,24 +114,27 @@ export async function toggleWarmup(
   userId: string,
   role: string,
 ): Promise<WarmupStatus> {
-  await getOwnedAccount(accountId, userId, role);
-
-  const updateData: Record<string, unknown> = {
-    isWarmupEnabled: enabled,
-  };
-
-  // Set warmupStartedAt when enabling for the first time (or re-enabling)
-  if (enabled) {
-    const account = await prisma.account.findUnique({ where: { id: accountId } });
-    if (!account!.warmupStartedAt) {
-      updateData.warmupStartedAt = new Date();
-    }
-  }
+  const account = await getOwnedAccount(accountId, userId, role);
 
   await prisma.account.update({
     where: { id: accountId },
-    data: updateData,
+    data: { isWarmupEnabled: enabled },
   });
+
+  // Set warmupStartedAt when enabling for the first time (or re-enabling), on the phone number
+  if (enabled && account.phoneNumber) {
+    const progress = await prisma.warmupProgress.findUnique({ where: { phoneNumber: account.phoneNumber } });
+    if (progress && !progress.warmupStartedAt) {
+      await prisma.warmupProgress.update({
+        where: { phoneNumber: account.phoneNumber },
+        data: { warmupStartedAt: new Date() }
+      });
+    } else if (!progress) {
+      await prisma.warmupProgress.create({
+        data: { phoneNumber: account.phoneNumber, warmupStartedAt: new Date() }
+      });
+    }
+  }
 
   logger.info({ accountId, enabled }, 'Warmup toggled');
   return getWarmupStatus(accountId);
@@ -121,15 +142,15 @@ export async function toggleWarmup(
 
 /** Check if an account qualifies for level-up and apply it. Returns true if leveled up. */
 export async function checkLevelUp(accountId: string): Promise<boolean> {
-  const account = await prisma.account.findUnique({ where: { id: accountId } });
-  if (!account) return false;
+  const { account, progress } = await getAccountProgress(accountId);
+  if (!account || !progress) return false;
 
-  const nextLevel = getNextLevel(account.warmupLevel);
+  const nextLevel = getNextLevel(progress.warmupLevel);
   if (!nextLevel) return false; // Already at max level
 
-  const currentConfig = getLevelConfig(account.warmupLevel);
+  const currentConfig = getLevelConfig(progress.warmupLevel);
   const totalMessagesSent = await getTotalMessagesSent(accountId);
-  const daysAtCurrentLevel = getDaysAtLevel(account.warmupStartedAt);
+  const daysAtCurrentLevel = getDaysAtLevel(progress.warmupStartedAt);
 
   const meetsMessageReq = totalMessagesSent >= currentConfig.minTotalMessages;
   const meetsDayReq = daysAtCurrentLevel >= currentConfig.minDaysAtLevel;
@@ -137,8 +158,8 @@ export async function checkLevelUp(accountId: string): Promise<boolean> {
   if (!meetsMessageReq || !meetsDayReq) return false;
 
   // Apply level-up
-  await prisma.account.update({
-    where: { id: accountId },
+  await prisma.warmupProgress.update({
+    where: { phoneNumber: account.phoneNumber! },
     data: {
       warmupLevel: nextLevel,
       warmupStartedAt: new Date(), // Reset timer for new level
@@ -146,7 +167,7 @@ export async function checkLevelUp(accountId: string): Promise<boolean> {
   });
 
   logger.info(
-    { accountId, from: account.warmupLevel, to: nextLevel, totalMessagesSent, daysAtCurrentLevel },
+    { accountId, from: progress.warmupLevel, to: nextLevel, totalMessagesSent, daysAtCurrentLevel },
     'Account leveled up',
   );
 
@@ -164,7 +185,7 @@ export async function getWarmupHistory(accountId: string, limit = 50) {
 
 /** Reset messagesSentToday for all accounts. Called daily. */
 export async function resetDailyCounts(): Promise<number> {
-  const result = await prisma.account.updateMany({
+  const result = await prisma.warmupProgress.updateMany({
     where: { messagesSentToday: { gt: 0 } },
     data: { messagesSentToday: 0 },
   });
@@ -208,21 +229,34 @@ export async function getWarmupOverview(userId: string, role: string): Promise<W
   let totalEnabled = 0;
 
   for (const account of accounts) {
-    const levelCfg = getLevelConfig(account.warmupLevel);
+    let level: WarmupLevel = 'L1';
+    let warmupStartedAt: Date | null = null;
+    let messagesSentToday = 0;
+
+    if (account.phoneNumber) {
+      const progress = await prisma.warmupProgress.findUnique({ where: { phoneNumber: account.phoneNumber } });
+      if (progress) {
+        level = progress.warmupLevel;
+        warmupStartedAt = progress.warmupStartedAt;
+        messagesSentToday = progress.messagesSentToday;
+      }
+    }
+
+    const levelCfg = getLevelConfig(level);
     const totalMessages = await getTotalMessagesSent(account.id);
-    const daysAtLevel = getDaysAtLevel(account.warmupStartedAt);
+    const daysAtLevel = getDaysAtLevel(warmupStartedAt);
 
     if (account.isWarmupEnabled) totalEnabled++;
-    totalMessages24h += account.messagesSentToday;
+    totalMessages24h += messagesSentToday;
 
     overviewAccounts.push({
       accountId: account.id,
       label: account.label,
-      level: account.warmupLevel,
+      level,
       isEnabled: account.isWarmupEnabled,
-      messagesSentToday: account.messagesSentToday,
+      messagesSentToday,
       maxMessagesPerDay: levelCfg.maxMessagesPerDay,
-      warmupStartedAt: account.warmupStartedAt,
+      warmupStartedAt,
       daysAtLevel,
       minDaysForLevelUp: levelCfg.minDaysAtLevel,
       totalMessages,

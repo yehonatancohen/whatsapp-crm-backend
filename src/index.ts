@@ -17,6 +17,7 @@ import warmupRouter from './warmup/routes';
 import usersRouter from './users/routes';
 import activityRouter from './activity/routes';
 import campaignsRouter from './campaigns/routes';
+import chatRouter from './chat/routes';
 
 // Services
 import { ClientManager } from './accounts/services/ClientManager';
@@ -48,6 +49,7 @@ app.use('/api/warmup', warmupRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/activity', activityRouter);
 app.use('/api/campaigns', campaignsRouter);
+app.use('/api/chat', chatRouter);
 
 // Health check
 app.get('/api/health', async (_req, res) => {

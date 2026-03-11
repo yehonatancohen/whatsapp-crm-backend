@@ -6,7 +6,7 @@ import { logger } from '../shared/logger';
 import { emitToUser } from '../shared/socket';
 import { ClientManager } from '../accounts/services/ClientManager';
 import { getLevelConfig } from './levelConfig';
-import { checkLevelUp } from './warmupService';
+import { checkLevelUp, getAccountProgress } from './warmupService';
 import { warmupCycleQueue } from './warmupQueue';
 import { resolveSpintax } from './spintax';
 import { simulateHumanSend } from './humanDelay';
@@ -70,16 +70,24 @@ export function createSchedulerWorker(): Worker {
       const now = Date.now();
 
       for (const account of accounts) {
-        const levelConfig = getLevelConfig(account.warmupLevel);
+        if (!account.phoneNumber) continue;
+
+        const progress = await prisma.warmupProgress.findUnique({
+          where: { phoneNumber: account.phoneNumber }
+        });
+
+        if (!progress) continue;
+
+        const levelConfig = getLevelConfig(progress.warmupLevel);
 
         // Check daily message limit
-        if (account.messagesSentToday >= levelConfig.maxMessagesPerDay) {
+        if (progress.messagesSentToday >= levelConfig.maxMessagesPerDay) {
           continue;
         }
 
         // Check if enough time has passed since last activity
-        if (account.lastMessageAt) {
-          const elapsed = now - account.lastMessageAt.getTime();
+        if (progress.lastMessageAt) {
+          const elapsed = now - progress.lastMessageAt.getTime();
           if (elapsed < levelConfig.intervalMinMs) {
             continue;
           }
@@ -87,8 +95,8 @@ export function createSchedulerWorker(): Worker {
 
         // Randomize: only add a job if we're within the interval window
         // This creates natural variance rather than firing exactly at intervalMin
-        if (account.lastMessageAt) {
-          const elapsed = now - account.lastMessageAt.getTime();
+        if (progress.lastMessageAt) {
+          const elapsed = now - progress.lastMessageAt.getTime();
           const intervalRange = levelConfig.intervalMaxMs - levelConfig.intervalMinMs;
           const threshold = Math.random() * intervalRange;
           if (elapsed - levelConfig.intervalMinMs < threshold) {
@@ -103,7 +111,7 @@ export function createSchedulerWorker(): Worker {
           { jobId: `warmup-${account.id}-${Date.now()}` },
         );
 
-        logger.debug({ accountId: account.id, level: account.warmupLevel }, 'Queued warmup cycle');
+        logger.debug({ accountId: account.id, level: progress.warmupLevel }, 'Queued warmup cycle');
       }
     },
     { connection: redis, concurrency: 1 },
@@ -125,15 +133,21 @@ export function createCycleWorker(): Worker {
       const { accountId } = job.data;
 
       const account = await prisma.account.findUnique({ where: { id: accountId } });
-      if (!account || !account.isWarmupEnabled || account.status !== 'AUTHENTICATED') {
+      if (!account || !account.isWarmupEnabled || account.status !== 'AUTHENTICATED' || !account.phoneNumber) {
         logger.debug({ accountId }, 'Skipping warmup cycle — account not eligible');
         return;
       }
 
-      const levelConfig = getLevelConfig(account.warmupLevel);
+      const progress = await prisma.warmupProgress.findUnique({
+        where: { phoneNumber: account.phoneNumber }
+      });
+
+      if (!progress) return;
+
+      const levelConfig = getLevelConfig(progress.warmupLevel);
 
       // Re-check daily limit
-      if (account.messagesSentToday >= levelConfig.maxMessagesPerDay) {
+      if (progress.messagesSentToday >= levelConfig.maxMessagesPerDay) {
         logger.debug({ accountId }, 'Skipping warmup cycle — daily limit reached');
         return;
       }
@@ -181,12 +195,12 @@ export function createCycleWorker(): Worker {
       });
 
       // Increment daily counter and update last message time
-      await prisma.account.update({
-        where: { id: accountId },
-        data: {
+      await prisma.warmupProgress.update({
+        where: { phoneNumber: account.phoneNumber },
+        data: { 
           messagesSentToday: { increment: 1 },
-          lastMessageAt: new Date(),
-        },
+          lastMessageAt: new Date()
+        }
       });
 
       // Emit socket event
@@ -199,7 +213,7 @@ export function createCycleWorker(): Worker {
       // Check for level-up
       const didLevelUp = await checkLevelUp(accountId);
       if (didLevelUp) {
-        const updated = await prisma.account.findUnique({ where: { id: accountId } });
+        const { progress: updated } = await getAccountProgress(accountId);
 
         // Create activity log entry for level-up
         await prisma.activityLog.create({
