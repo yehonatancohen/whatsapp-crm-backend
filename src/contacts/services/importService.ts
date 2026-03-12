@@ -14,22 +14,25 @@ interface ImportResult {
   duplicates: number;
   errors: number;
   errorDetails: ImportErrorDetail[];
+  listId?: string;
+  listName?: string;
 }
 
 const MAX_ERROR_DETAILS = 50;
 
-/** Normalize phone number: strip common separators, ensure digits only */
-function normalizePhone(raw: string): string | null {
+/** Normalize phone number: strip separators, store with + prefix */
+export function normalizePhone(raw: string): string | null {
   if (!raw) return null;
   const cleaned = raw.replace(/[\s\-().\/]/g, '');
   const digits = cleaned.replace(/^\+/, '');
   if (!/^\d{7,15}$/.test(digits)) return null;
-  return digits;
+  return `+${digits}`;
 }
 
 export async function importFromBuffer(
   buffer: Buffer,
   fileName: string,
+  options?: { listName?: string; userId?: string },
 ): Promise<ImportResult> {
   const workbook = XLSX.read(buffer, { type: 'buffer' });
   const sheetName = workbook.SheetNames[0];
@@ -106,5 +109,52 @@ export async function importFromBuffer(
     }
   }
 
-  return { total: rows.length, created, duplicates, errors, errorDetails };
+  // Optionally create a contact list and add all successfully imported contacts to it
+  let listId: string | undefined;
+  let listName: string | undefined;
+
+  if (options?.listName && options?.userId) {
+    try {
+      // Collect all phone numbers that were successfully imported (created or duplicates)
+      const importedPhones: string[] = [];
+      for (let i = 0; i < rows.length; i++) {
+        const rawPhone = String(rows[i][phoneCol!] ?? '').trim();
+        const phone = normalizePhone(rawPhone);
+        if (phone) importedPhones.push(phone);
+      }
+
+      if (importedPhones.length > 0) {
+        // Find matching contacts
+        const contacts = await prisma.contact.findMany({
+          where: { phoneNumber: { in: importedPhones } },
+          select: { id: true },
+        });
+
+        if (contacts.length > 0) {
+          const list = await prisma.contactList.create({
+            data: {
+              name: options.listName,
+              userId: options.userId,
+            },
+          });
+
+          await prisma.contactListEntry.createMany({
+            data: contacts.map((c) => ({
+              contactId: c.id,
+              contactListId: list.id,
+            })),
+            skipDuplicates: true,
+          });
+
+          listId = list.id;
+          listName = list.name;
+          logger.info({ listId, listName, contactCount: contacts.length }, 'Created contact list from import');
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, 'Failed to create contact list from import');
+    }
+  }
+
+  return { total: rows.length, created, duplicates, errors, errorDetails, listId, listName };
 }

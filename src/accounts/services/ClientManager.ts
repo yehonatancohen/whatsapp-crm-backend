@@ -1,5 +1,5 @@
 import { AccountStatus as PrismaAccountStatus } from '@prisma/client';
-import { WhatsAppInstance, AccountEventHandlers, AccountStatusType } from './WhatsAppInstance';
+import { WhatsAppInstance, AccountEventHandlers, AccountStatusType, ChatMessageEvent } from './WhatsAppInstance';
 import { prisma } from '../../shared/db';
 import { emitToUser, emitToAdmins } from '../../shared/socket';
 import { logger } from '../../shared/logger';
@@ -61,6 +61,7 @@ export class ClientManager {
       onQr: (id, qrCode) => emitToUser(userId, 'account:qr', { id, qrCode }),
       onAuthenticated: (id, phoneNumber, pushName) =>
         this.handleAuthenticated(id, userId, phoneNumber, pushName),
+      onMessage: (msg) => emitToUser(userId, 'chat:message', msg),
     };
 
     // Create and start the WhatsApp instance
@@ -285,6 +286,7 @@ export class ClientManager {
       onQr: (id, qrCode) => emitToUser(userId, 'account:qr', { id, qrCode }),
       onAuthenticated: (id, phoneNumber, pushName) =>
         this.handleAuthenticated(id, userId, phoneNumber, pushName),
+      onMessage: (msg) => emitToUser(userId, 'chat:message', msg),
     };
 
     const instance = new WhatsAppInstance(accountId, account.label, account.proxy || undefined, eventHandlers);
@@ -316,6 +318,7 @@ export class ClientManager {
         onQr: (id, qrCode) => emitToUser(userId, 'account:qr', { id, qrCode }),
         onAuthenticated: (id, phoneNumber, pushName) =>
           this.handleAuthenticated(id, userId, phoneNumber, pushName),
+        onMessage: (msg) => emitToUser(userId, 'chat:message', msg),
       };
 
       const instance = new WhatsAppInstance(account.id, account.label, account.proxy || undefined, eventHandlers);

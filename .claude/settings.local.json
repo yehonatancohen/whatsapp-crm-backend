@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(xargs grep -l \"md:\\\\|lg:\\\\|sm:\\\\|xl:\\\\|2xl:\")"
+      "Bash(xargs grep -l \"md:\\\\|lg:\\\\|sm:\\\\|xl:\\\\|2xl:\")",
+      "Bash(npx prisma migrate dev --name normalize_phone_prefix)"
     ]
   }
 }

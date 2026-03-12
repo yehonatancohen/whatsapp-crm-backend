@@ -4,6 +4,7 @@ import multer from 'multer';
 import { authenticate } from '../shared/middleware/auth';
 import { validate } from '../shared/middleware/validate';
 import { NotFoundError, ValidationError } from '../shared/errors';
+import { prisma } from '../shared/db';
 import {
   listContacts,
   createContact,
@@ -97,7 +98,11 @@ router.post(
     try {
       if (!req.file) throw new ValidationError('File is required');
 
-      const result = await importFromBuffer(req.file.buffer, req.file.originalname);
+      const listName = req.body.listName as string | undefined;
+      const result = await importFromBuffer(req.file.buffer, req.file.originalname, {
+        listName: listName || undefined,
+        userId: req.user!.userId,
+      });
 
       res.json({
         message: 'Import completed',
@@ -158,6 +163,20 @@ router.post(
     }
   },
 );
+
+// DELETE /api/contacts/lists/:id
+router.delete('/lists/:id', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const list = await prisma.contactList.findFirst({
+      where: { id: req.params.id, userId: req.user!.userId },
+    });
+    if (!list) throw new NotFoundError('Contact list');
+    await prisma.contactList.delete({ where: { id: req.params.id } });
+    res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
 
 // GET /api/contacts/lists/:id
 router.get('/lists/:id', async (req: Request, res: Response, next: NextFunction) => {

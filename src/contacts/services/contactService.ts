@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../shared/db';
+import { normalizePhone } from './importService';
 
 interface ListContactsParams {
   page?: number;
@@ -44,9 +45,10 @@ export async function listContacts({ page = 1, limit = 50, search, tags }: ListC
 }
 
 export async function createContact(phoneNumber: string, name?: string, tags?: string[]) {
+  const normalized = normalizePhone(phoneNumber);
   return prisma.contact.create({
     data: {
-      phoneNumber,
+      phoneNumber: normalized || phoneNumber,
       name: name || null,
       tags: tags || [],
     },

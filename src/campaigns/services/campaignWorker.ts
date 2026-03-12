@@ -80,15 +80,43 @@ export function createCampaignProcessorWorker(): Worker {
       }
 
       // Select an account for sending (round-robin, level-gated)
-      const account = await selectAccount(campaignId);
+      // For group messages, verify the selected account is a member of the target group
+      let account: { id: string; userId: string } | null = null;
+
+      if (campaign.type === 'GROUP_MESSAGE' && message.groupJid) {
+        const manager = ClientManager.getInstance();
+        const excludeIds: string[] = [];
+
+        while (true) {
+          const candidate = await selectAccount(campaignId, excludeIds);
+          if (!candidate) break;
+
+          const instance = manager.getInstanceById(candidate.id);
+          if (instance && instance.status === 'AUTHENTICATED') {
+            const groups = await instance.getGroups();
+            if (groups.some((g) => g.id === message.groupJid)) {
+              account = candidate;
+              break;
+            }
+            logger.debug({ accountId: candidate.id, groupJid: message.groupJid }, 'Account not in target group, trying next');
+          }
+
+          excludeIds.push(candidate.id);
+        }
+      } else {
+        account = await selectAccount(campaignId);
+      }
 
       if (!account) {
-        // No eligible accounts — fail this message and try the next one
+        const errorMsg = campaign.type === 'GROUP_MESSAGE'
+          ? 'No connected account is a member of the target group. Make sure at least one account has joined the group.'
+          : 'No eligible accounts — all accounts may have reached their daily limit or are disconnected';
+
         await prisma.campaignMessage.update({
           where: { id: message.id },
           data: {
             status: 'FAILED',
-            errorMessage: 'No eligible accounts — all accounts may have reached their daily limit or are disconnected',
+            errorMessage: errorMsg,
           },
         });
 

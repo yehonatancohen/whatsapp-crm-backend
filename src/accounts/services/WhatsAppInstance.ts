@@ -7,10 +7,25 @@ import { logger } from '../../shared/logger';
 
 export type AccountStatusType = 'INITIALIZING' | 'QR_READY' | 'AUTHENTICATED' | 'DISCONNECTED';
 
+export interface ChatMessageEvent {
+  accountId: string;
+  accountLabel: string;
+  chatId: string;
+  messageId: string;
+  body: string;
+  fromMe: boolean;
+  timestamp: number;
+  type: string;
+  author?: string;
+  chatName?: string;
+  isGroup: boolean;
+}
+
 export interface AccountEventHandlers {
   onStatusChange: (id: string, status: AccountStatusType, error?: string) => void;
   onQr: (id: string, qrCode: string) => void;
   onAuthenticated: (id: string, phoneNumber?: string, pushName?: string) => void;
+  onMessage?: (msg: ChatMessageEvent) => void;
 }
 
 export class WhatsAppInstance {
@@ -115,6 +130,29 @@ export class WhatsAppInstance {
         this.setStatus('DISCONNECTED', `Auth failure: ${msg}`);
       } catch (err: unknown) {
         this.error = err instanceof Error ? err.message : 'Auth failure handler error';
+      }
+    });
+
+    // Chat message events — fires for both incoming and outgoing messages
+    this.client.on('message_create', async (msg) => {
+      try {
+        if (!this.eventHandlers?.onMessage) return;
+        const chat = await msg.getChat();
+        this.eventHandlers.onMessage({
+          accountId: this.id,
+          accountLabel: this.label,
+          chatId: chat.id._serialized,
+          messageId: msg.id._serialized,
+          body: msg.body,
+          fromMe: msg.fromMe,
+          timestamp: msg.timestamp,
+          type: msg.type,
+          author: msg.author || undefined,
+          chatName: chat.name || chat.id.user,
+          isGroup: chat.isGroup,
+        });
+      } catch (err) {
+        logger.debug({ instanceId: this.id, err }, 'message_create handler error');
       }
     });
   }
