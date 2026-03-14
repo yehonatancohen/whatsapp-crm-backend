@@ -7,6 +7,7 @@ export interface AuthUser {
   userId: string;
   email: string;
   role: 'ADMIN' | 'USER';
+  emailVerified: boolean;
 }
 
 // Extend Express Request

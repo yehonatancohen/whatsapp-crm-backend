@@ -8,6 +8,11 @@ import { logger } from './shared/logger';
 import { errorHandler } from './shared/errors';
 import { initSocket } from './shared/socket';
 import { authLimiter, apiLimiter } from './shared/middleware/rateLimiter';
+import { authenticate } from './shared/middleware/auth';
+import { requireVerified } from './shared/middleware/requireVerified';
+import { requireActiveSubscription } from './shared/middleware/requireSubscription';
+import { requestLogger } from './shared/middleware/requestLogger';
+import { validateEnv } from './shared/utils/validateEnv';
 
 // Routes
 import authRouter from './auth/routes';
@@ -18,12 +23,17 @@ import usersRouter from './users/routes';
 import activityRouter from './activity/routes';
 import campaignsRouter from './campaigns/routes';
 import chatRouter from './chat/routes';
+import subscriptionsRouter from './subscriptions/routes';
+import stripeWebhookRouter from './subscriptions/webhookRoute';
 
 // Services
 import { ClientManager } from './accounts/services/ClientManager';
 import { createCycleWorker } from './warmup/warmupWorker';
 import { createCampaignProcessorWorker, createCampaignSchedulerWorker } from './campaigns/services/campaignWorker';
 import { campaignSchedulerQueue } from './campaigns/campaignQueue';
+
+// Validate environment variables
+validateEnv();
 
 const app = express();
 const httpServer = createServer(app);
@@ -35,21 +45,29 @@ initSocket(httpServer);
 app.set('trust proxy', 1);
 app.use(helmet());
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
+app.use(requestLogger);
+
+// Stripe webhook needs raw body BEFORE json parser
+app.use('/api/subscriptions/webhook', express.raw({ type: 'application/json' }), stripeWebhookRouter);
+
 app.use(express.json());
 
 // Rate limiting
 app.use('/api/auth', authLimiter);
 app.use('/api/', apiLimiter);
 
-// Routes
+// Routes — auth, users (admin), activity, subscriptions don't require verified email
 app.use('/api/auth', authRouter);
-app.use('/api/accounts', accountsRouter);
-app.use('/api/contacts', contactsRouter);
-app.use('/api/warmup', warmupRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/activity', activityRouter);
-app.use('/api/campaigns', campaignsRouter);
-app.use('/api/chat', chatRouter);
+app.use('/api/subscriptions', subscriptionsRouter);
+
+// Resource routes require verified email + active subscription
+app.use('/api/accounts', authenticate, requireVerified, requireActiveSubscription, accountsRouter);
+app.use('/api/contacts', authenticate, requireVerified, requireActiveSubscription, contactsRouter);
+app.use('/api/warmup', authenticate, requireVerified, requireActiveSubscription, warmupRouter);
+app.use('/api/campaigns', authenticate, requireVerified, requireActiveSubscription, campaignsRouter);
+app.use('/api/chat', authenticate, requireVerified, requireActiveSubscription, chatRouter);
 
 // Health check
 app.get('/api/health', async (_req, res) => {

@@ -7,6 +7,7 @@ interface AccessTokenPayload {
   userId: string;
   email: string;
   role: string;
+  emailVerified: boolean;
 }
 
 export function generateAccessToken(payload: AccessTokenPayload): string {
@@ -67,6 +68,7 @@ export async function rotateRefreshToken(
     userId: stored.user.id,
     email: stored.user.email,
     role: stored.user.role,
+    emailVerified: stored.user.emailVerified,
   });
 
   const refreshToken = await generateRefreshToken(stored.userId);

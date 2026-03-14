@@ -16,4 +16,17 @@ export const config = {
   jwtRefreshSecret: process.env.JWT_REFRESH_SECRET || 'dev-jwt-refresh-secret-change-in-production',
   jwtAccessExpiry: process.env.JWT_ACCESS_EXPIRY || '15m',
   jwtRefreshExpiry: process.env.JWT_REFRESH_EXPIRY || '7d',
+
+  // Email (Resend)
+  resendApiKey: process.env.RESEND_API_KEY || '',
+  appName: process.env.APP_NAME || 'parties247',
+  frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
+
+  // Stripe
+  stripeSecretKey: process.env.STRIPE_SECRET_KEY || '',
+  stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
+  stripePriceStarter: process.env.STRIPE_PRICE_STARTER || '',
+  stripePricePro: process.env.STRIPE_PRICE_PRO || '',
+  stripePriceEnterprise: process.env.STRIPE_PRICE_ENTERPRISE || '',
+  trialDays: parseInt(process.env.TRIAL_DAYS || '7', 10),
 };

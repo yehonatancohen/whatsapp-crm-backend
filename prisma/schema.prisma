@@ -61,6 +61,20 @@ enum WarmupActivityType {
   STATUS_POST
 }
 
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  UNPAID
+}
+
+enum PlanTier {
+  STARTER
+  PRO
+  ENTERPRISE
+}
+
 enum ActivityType {
   ACCOUNT_CREATED
   ACCOUNT_DELETED
@@ -77,25 +91,37 @@ enum ActivityType {
   CONTACT_IMPORTED
   USER_REGISTERED
   USER_LOGIN
+  EMAIL_VERIFIED
+  PASSWORD_RESET_REQUESTED
+  PASSWORD_RESET_COMPLETED
+  SUBSCRIPTION_CREATED
+  SUBSCRIPTION_UPDATED
+  SUBSCRIPTION_CANCELED
 }
 
 // ─── Models ──────────────────────────────────────────────────────
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String
-  name         String
-  role         Role     @default(USER)
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                 String    @id @default(cuid())
+  email              String    @unique
+  passwordHash       String
+  name               String
+  role               Role      @default(USER)
+  isActive           Boolean   @default(true)
+  emailVerified      Boolean   @default(false)
+  verificationToken  String?   @unique
+  verificationExpiry DateTime?
+  resetToken         String?   @unique
+  resetTokenExpiry   DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   accounts      Account[]
   contactLists  ContactList[]
   campaigns     Campaign[]
   activityLogs  ActivityLog[]
   refreshTokens RefreshToken[]
+  subscription  Subscription?
 }
 
 model RefreshToken {
@@ -259,6 +285,22 @@ model WarmupLog {
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@index([accountId, createdAt])
+}
+
+model Subscription {
+  id                   String             @id @default(cuid())
+  userId               String             @unique
+  stripeCustomerId     String             @unique
+  stripeSubscriptionId String?            @unique
+  planTier             PlanTier           @default(STARTER)
+  status               SubscriptionStatus @default(TRIALING)
+  trialEndsAt          DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model ActivityLog {

@@ -16,6 +16,54 @@ const updateUserSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
+// GET /api/users/stats/overview
+router.get('/stats/overview', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const now = new Date();
+    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+    const [
+      totalUsers,
+      verifiedUsers,
+      activeUsers,
+      newUsersWeek,
+      newUsersMonth,
+      subscriptions,
+    ] = await Promise.all([
+      prisma.user.count(),
+      prisma.user.count({ where: { emailVerified: true } }),
+      prisma.user.count({ where: { isActive: true } }),
+      prisma.user.count({ where: { createdAt: { gte: weekAgo } } }),
+      prisma.user.count({ where: { createdAt: { gte: monthAgo } } }),
+      prisma.subscription.groupBy({
+        by: ['status', 'planTier'],
+        _count: { id: true },
+      }),
+    ]);
+
+    // Build subscription breakdown
+    const subsByStatus: Record<string, number> = {};
+    const subsByTier: Record<string, number> = {};
+    for (const row of subscriptions) {
+      subsByStatus[row.status] = (subsByStatus[row.status] || 0) + row._count.id;
+      subsByTier[row.planTier] = (subsByTier[row.planTier] || 0) + row._count.id;
+    }
+
+    res.json({
+      totalUsers,
+      verifiedUsers,
+      activeUsers,
+      newUsersWeek,
+      newUsersMonth,
+      subsByStatus,
+      subsByTier,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/users
 router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
   try {
@@ -26,8 +74,12 @@ router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
         name: true,
         role: true,
         isActive: true,
+        emailVerified: true,
         createdAt: true,
         _count: { select: { accounts: true, campaigns: true } },
+        subscription: {
+          select: { planTier: true, status: true, trialEndsAt: true },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -64,5 +116,27 @@ router.patch(
     }
   },
 );
+
+// DELETE /api/users/:id
+router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.params.id },
+      include: { subscription: true },
+    });
+    if (!user) throw new NotFoundError('User');
+
+    // Don't allow deleting yourself
+    if (user.id === req.user!.userId) {
+      res.status(400).json({ error: 'Cannot delete your own account' });
+      return;
+    }
+
+    await prisma.user.delete({ where: { id: req.params.id } });
+    res.json({ message: 'User deleted' });
+  } catch (err) {
+    next(err);
+  }
+});
 
 export default router;
