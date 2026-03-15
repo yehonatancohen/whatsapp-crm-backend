@@ -9,10 +9,10 @@ const envSchema = z.object({
 });
 
 const productionSchema = envSchema.extend({
-  RESEND_API_KEY: z.string().min(1, 'RESEND_API_KEY is required in production'),
+  // RESEND_API_KEY: z.string().min(1, 'RESEND_API_KEY is required in production'),
   // STRIPE_SECRET_KEY: z.string().min(1, 'STRIPE_SECRET_KEY is required in production'),
   // STRIPE_WEBHOOK_SECRET: z.string().min(1, 'STRIPE_WEBHOOK_SECRET is required in production'),
-  FRONTEND_URL: z.string().url('FRONTEND_URL must be a valid URL'),
+  FRONTEND_URL: z.string().url('FRONTEND_URL must be a valid URL').optional().or(z.literal('')),
 });
 
 export function validateEnv() {

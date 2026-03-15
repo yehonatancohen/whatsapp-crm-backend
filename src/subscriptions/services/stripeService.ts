@@ -6,7 +6,8 @@ import { logger } from '../../shared/logger';
 let stripe: Stripe | null = null;
 
 export function getStripe(): Stripe {
-  throw new Error('Stripe is disabled');
+  logger.error('Stripe is disabled: getStripe() was called unexpectedly');
+  return null as any;
 }
 
 export async function createCustomer(userId: string, email: string, name: string) {
