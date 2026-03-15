@@ -20,6 +20,12 @@ const createAccountSchema = z.object({
 });
 
 const updateAccountSchema = z.object({
+  label: z
+    .string()
+    .min(1)
+    .max(50)
+    .regex(/^[a-zA-Z0-9_-]+$/, 'Only letters, numbers, hyphens and underscores allowed')
+    .optional(),
   isWarmupEnabled: z.boolean().optional(),
   proxy: z.string().optional(),
 });
@@ -127,14 +133,11 @@ router.patch(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const manager = ClientManager.getInstance();
-      const isAdmin = req.user!.role === 'ADMIN';
-      const account = await manager.getAccount(
+      const account = await manager.updateAccount(
         req.params.id,
-        isAdmin ? undefined : req.user!.userId,
+        req.user!.userId,
+        req.body
       );
-      if (!account) throw new NotFoundError('Account');
-
-      // For now just return account — full PATCH logic in Phase 4 (warmup toggle)
       res.json(account);
     } catch (err) {
       next(err);

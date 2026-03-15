@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { AccountStatus as PrismaAccountStatus } from '@prisma/client';
 import { WhatsAppInstance, AccountEventHandlers, AccountStatusType, ChatMessageEvent } from './WhatsAppInstance';
 import { prisma } from '../../shared/db';
@@ -83,6 +85,81 @@ export class ClientManager {
     });
 
     return instance.toResponse();
+  }
+
+  async updateAccount(accountId: string, userId: string, data: { label?: string; proxy?: string; isWarmupEnabled?: boolean }) {
+    const account = await prisma.account.findFirst({
+      where: { id: accountId, userId },
+    });
+    if (!account) throw new NotFoundError('Account');
+
+    const updateData: any = {};
+    if (data.isWarmupEnabled !== undefined) updateData.isWarmupEnabled = data.isWarmupEnabled;
+    if (data.proxy !== undefined) updateData.proxy = data.proxy;
+
+    if (data.label && data.label !== account.label) {
+      // Check if new label already exists for this user
+      const existing = await prisma.account.findFirst({
+        where: { userId, label: data.label, id: { not: accountId } },
+      });
+      if (existing) throw new ConflictError(`Account with label "${data.label}" already exists`);
+
+      // Rename session directory if it exists
+      const oldSessionDir = path.resolve('.wwebjs_auth', `session-${account.label}`);
+      const newSessionDir = path.resolve('.wwebjs_auth', `session-${data.label}`);
+
+      try {
+        if (fs.existsSync(oldSessionDir)) {
+          // If instance is running, we must stop it before renaming
+          const instance = this.instances.get(accountId);
+          if (instance) {
+            await instance.destroy();
+          }
+          fs.renameSync(oldSessionDir, newSessionDir);
+          logger.info({ accountId, oldLabel: account.label, newLabel: data.label }, 'Renamed session directory');
+        }
+      } catch (err) {
+        logger.error({ accountId, err }, 'Failed to rename session directory');
+      }
+
+      updateData.label = data.label;
+    }
+
+    const updated = await prisma.account.update({
+      where: { id: accountId },
+      data: updateData,
+    });
+
+    // If we changed label or proxy, we should re-initialize the instance
+    if (data.label || data.proxy !== undefined) {
+      const existingInstance = this.instances.get(accountId);
+      if (existingInstance) {
+        await existingInstance.destroy();
+      }
+
+      const eventHandlers: AccountEventHandlers = {
+        onStatusChange: (id, status, error) => this.handleStatusChange(id, userId, status, error),
+        onQr: (id, qrCode) => emitToUser(userId, 'account:qr', { id, qrCode }),
+        onAuthenticated: (id, phoneNumber, pushName) =>
+          this.handleAuthenticated(id, userId, phoneNumber, pushName),
+        onMessage: (msg) => emitToUser(userId, 'chat:message', msg),
+      };
+
+      const newInstance = new WhatsAppInstance(
+        updated.id,
+        updated.label,
+        updated.proxy || undefined,
+        eventHandlers
+      );
+      this.instances.set(accountId, newInstance);
+      
+      // Re-init
+      newInstance.initialize().catch((err) => {
+        logger.error({ accountId, err }, 'Post-update init error');
+      });
+    }
+
+    return this.getAccount(accountId, userId);
   }
 
   private async handleStatusChange(

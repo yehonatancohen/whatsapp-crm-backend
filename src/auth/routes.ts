@@ -244,6 +244,46 @@ router.post(
   },
 );
 
+// GET /api/auth/me
+router.get('/me', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user!.userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        emailVerified: true,
+        createdAt: true,
+        subscription: {
+          select: {
+            planTier: true,
+            status: true,
+            trialEndsAt: true,
+            currentPeriodEnd: true,
+            cancelAtPeriodEnd: true,
+          },
+        },
+        _count: {
+          select: {
+            accounts: true,
+            campaigns: true,
+          },
+        },
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundError('User');
+    }
+
+    res.json(user);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // PATCH /api/auth/profile
 router.patch(
   '/profile',
@@ -254,7 +294,19 @@ router.patch(
       const user = await prisma.user.update({
         where: { id: req.user!.userId },
         data: { name: req.body.name },
-        select: { id: true, email: true, name: true, role: true, emailVerified: true },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          role: true,
+          emailVerified: true,
+          subscription: {
+            select: {
+              planTier: true,
+              status: true,
+            },
+          },
+        },
       });
       res.json(user);
     } catch (err) {
