@@ -32,6 +32,7 @@ router.get('/current', async (req: Request, res: Response, next: NextFunction) =
   }
 });
 
+/*
 // POST /api/subscriptions/checkout
 router.post(
   '/checkout',
@@ -55,5 +56,6 @@ router.post('/portal', async (req: Request, res: Response, next: NextFunction) =
     next(err);
   }
 });
+*/
 
 export default router;

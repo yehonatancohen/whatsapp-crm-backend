@@ -24,7 +24,7 @@ import activityRouter from './activity/routes';
 import campaignsRouter from './campaigns/routes';
 import chatRouter from './chat/routes';
 import subscriptionsRouter from './subscriptions/routes';
-import stripeWebhookRouter from './subscriptions/webhookRoute';
+// import stripeWebhookRouter from './subscriptions/webhookRoute';
 
 // Services
 import { ClientManager } from './accounts/services/ClientManager';
@@ -48,7 +48,7 @@ app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(requestLogger);
 
 // Stripe webhook needs raw body BEFORE json parser
-app.use('/api/subscriptions/webhook', express.raw({ type: 'application/json' }), stripeWebhookRouter);
+// app.use('/api/subscriptions/webhook', express.raw({ type: 'application/json' }), stripeWebhookRouter);
 
 app.use(express.json());
 
