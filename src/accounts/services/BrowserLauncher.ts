@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import type { Browser } from 'puppeteer';
@@ -22,6 +24,18 @@ export async function launchStealthBrowser(proxy?: string, userDataDir?: string)
 
   if (proxy) {
     args.push(`--proxy-server=${proxy}`);
+  }
+
+  // Clean up Chromium lock file if it exists (prevents "Profile in use" error after crashes)
+  if (userDataDir) {
+    const lockFile = path.join(userDataDir, 'SingletonLock');
+    try {
+      if (fs.existsSync(lockFile)) {
+        fs.unlinkSync(lockFile);
+      }
+    } catch (err) {
+      // Ignore errors if file is already gone or inaccessible
+    }
   }
 
   const browser = await puppeteer.launch({
