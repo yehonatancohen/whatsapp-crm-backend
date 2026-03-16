@@ -57,7 +57,13 @@ router.get('/stats', async (req: Request, res: Response, next: NextFunction) => 
     ] = await Promise.all([
       prisma.account.count({ where: userFilter }),
       prisma.account.count({ where: { ...userFilter, status: 'AUTHENTICATED' } }),
-      prisma.contact.count(),
+      prisma.contact.count(isAdmin ? {} : {
+        where: {
+          listEntries: {
+            some: { contactList: { userId: req.user!.userId } },
+          },
+        },
+      }),
       prisma.campaign.count({ where: userFilter }),
       prisma.campaign.count({ where: { ...userFilter, status: { in: ['RUNNING', 'SCHEDULED'] } } }),
       prisma.campaignMessage.count({

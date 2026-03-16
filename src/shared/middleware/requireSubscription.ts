@@ -1,17 +1,28 @@
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../db';
 import { ForbiddenError } from '../errors';
+import { config } from '../../config';
 
 export async function requireActiveSubscription(req: Request, _res: Response, next: NextFunction): Promise<void> {
   // Admins bypass subscription check
   if (req.user!.role === 'ADMIN') return next();
 
-  const sub = await prisma.subscription.findUnique({
+  let sub = await prisma.subscription.findUnique({
     where: { userId: req.user!.userId },
   });
 
+  // Auto-create trial subscription if none exists (handles race condition from registration)
   if (!sub) {
-    throw new ForbiddenError('No subscription found. Please choose a plan.');
+    const trialEndsAt = new Date(Date.now() + (config.trialDays || 30) * 24 * 60 * 60 * 1000);
+    sub = await prisma.subscription.create({
+      data: {
+        userId: req.user!.userId,
+        stripeCustomerId: `mock_${req.user!.userId}`,
+        status: 'TRIALING',
+        planTier: 'STARTER',
+        trialEndsAt,
+      },
+    });
   }
 
   const activeStatuses = ['TRIALING', 'ACTIVE'];
