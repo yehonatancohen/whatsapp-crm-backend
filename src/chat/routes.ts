@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { authenticate } from '../shared/middleware/auth';
 import { validate } from '../shared/middleware/validate';
 import { ClientManager } from '../accounts/services/ClientManager';
-import { NotFoundError, ValidationError } from '../shared/errors';
 
 const router = Router();
 router.use(authenticate);
@@ -183,6 +182,127 @@ router.post('/:accountId/:chatId/send', validate(sendSchema), async (req: Reques
       type: msg.type,
       ack: msg.ack
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// 4. Get group info (participants, settings)
+router.get('/:accountId/:chatId/group-info', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { accountId, chatId } = req.params;
+
+    const manager = ClientManager.getInstance();
+    const instance = manager.getInstanceById(accountId);
+    if (!instance || instance.status !== 'AUTHENTICATED') {
+      res.status(400).json({ error: 'Account not authenticated' });
+      return;
+    }
+
+    const client = instance.getClient();
+    if (!client) {
+      res.status(400).json({ error: 'WhatsApp client not ready' });
+      return;
+    }
+
+    const chat = await client.getChatById(chatId);
+    if (!chat || !chat.isGroup) {
+      res.status(400).json({ error: 'Not a group chat' });
+      return;
+    }
+
+    const groupChat = chat as any; // GroupChat type
+    const myNumber = client.info?.wid?._serialized;
+
+    const participants = (groupChat.participants || []).map((p: any) => ({
+      id: p.id._serialized,
+      isAdmin: p.isAdmin || false,
+      isSuperAdmin: p.isSuperAdmin || false,
+    }));
+
+    const me = participants.find((p: any) => p.id === myNumber);
+
+    res.json({
+      name: chat.name,
+      description: groupChat.description || '',
+      participantCount: participants.length,
+      participants,
+      iAmAdmin: me?.isAdmin || me?.isSuperAdmin || false,
+      canAnyoneAdd: !groupChat.groupMetadata?.restrict,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// 5. Add participants to a group
+const addParticipantsSchema = z.object({
+  phoneNumbers: z.array(z.string().min(1)).min(1).max(5),
+});
+
+router.post('/:accountId/:chatId/add-participants', validate(addParticipantsSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { accountId, chatId } = req.params;
+    const { phoneNumbers } = req.body;
+
+    const manager = ClientManager.getInstance();
+    const instance = manager.getInstanceById(accountId);
+    if (!instance || instance.status !== 'AUTHENTICATED') {
+      res.status(400).json({ error: 'Account not authenticated' });
+      return;
+    }
+
+    const client = instance.getClient();
+    if (!client) {
+      res.status(400).json({ error: 'WhatsApp client not ready' });
+      return;
+    }
+
+    const chat = await client.getChatById(chatId);
+    if (!chat || !chat.isGroup) {
+      res.status(400).json({ error: 'Not a group chat' });
+      return;
+    }
+
+    const groupChat = chat as any;
+    const myNumber = client.info?.wid?._serialized;
+    const participants = groupChat.participants || [];
+    const me = participants.find((p: any) => p.id._serialized === myNumber);
+    const iAmAdmin = me?.isAdmin || me?.isSuperAdmin || false;
+    const canAnyoneAdd = !groupChat.groupMetadata?.restrict;
+
+    if (!iAmAdmin && !canAnyoneAdd) {
+      res.status(403).json({ error: 'Only admins can add participants to this group' });
+      return;
+    }
+
+    // Format phone numbers to WhatsApp IDs (e.g., "972501234567" → "972501234567@c.us")
+    const participantIds = phoneNumbers.map((num: string) => {
+      const cleaned = num.replace(/[\s\-\+\(\)]/g, '');
+      return cleaned.includes('@') ? cleaned : `${cleaned}@c.us`;
+    });
+
+    // Use slow delays between adds to reduce ban risk (1.5-3 seconds)
+    const result = await groupChat.addParticipants(participantIds, {
+      sleep: [1500, 3000],
+      autoSendInviteV4: true,
+      comment: '',
+    });
+
+    // Parse results per participant
+    const results: Record<string, { success: boolean; message: string; inviteSent: boolean }> = {};
+    if (typeof result === 'object' && result !== null) {
+      for (const [id, info] of Object.entries(result as Record<string, any>)) {
+        const code = info?.code;
+        results[id] = {
+          success: code === 200,
+          message: code === 200 ? 'Added' : code === 403 ? 'Privacy settings block adding' : code === 409 ? 'Already in group' : (info?.message || 'Failed'),
+          inviteSent: info?.isInviteV4Sent || false,
+        };
+      }
+    }
+
+    res.json({ results });
   } catch (err) {
     next(err);
   }
