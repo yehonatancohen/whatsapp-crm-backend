@@ -296,11 +296,17 @@ router.post('/:accountId/:chatId/add-participants', validate(addParticipantsSche
     });
 
     // Use slow delays between adds to reduce ban risk (1.5-3 seconds)
-    const result = await groupChat.addParticipants(participantIds, {
-      sleep: [1500, 3000],
-      autoSendInviteV4: true,
-      comment: '',
-    });
+    let result;
+    try {
+      result = await groupChat.addParticipants(participantIds, {
+        sleep: [1500, 3000],
+        autoSendInviteV4: true,
+        comment: '',
+      });
+    } catch {
+      res.status(502).json({ error: 'WhatsApp failed to add participants. The group or numbers may be restricted. Try again later.' });
+      return;
+    }
 
     // Parse results per participant
     const results: Record<string, { success: boolean; message: string; inviteSent: boolean }> = {};
