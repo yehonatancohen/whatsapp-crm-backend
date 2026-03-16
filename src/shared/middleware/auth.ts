@@ -21,11 +21,18 @@ declare global {
 
 export function authenticate(req: Request, _res: Response, next: NextFunction): void {
   const header = req.headers.authorization;
-  if (!header?.startsWith('Bearer ')) {
-    throw new UnauthorizedError('Missing or invalid Authorization header');
+  const queryToken = req.query.token as string | undefined;
+
+  let token: string | undefined;
+  if (header?.startsWith('Bearer ')) {
+    token = header.slice(7);
+  } else if (queryToken) {
+    token = queryToken;
   }
 
-  const token = header.slice(7);
+  if (!token) {
+    throw new UnauthorizedError('Missing or invalid Authorization header');
+  }
 
   try {
     const payload = jwt.verify(token, config.jwtSecret) as AuthUser;
