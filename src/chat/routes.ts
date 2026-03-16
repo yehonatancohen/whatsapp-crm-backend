@@ -130,7 +130,20 @@ router.get('/:accountId/:chatId/messages/:messageId/media', async (req: Request,
       return;
     }
 
-    const media = await msg.downloadMedia();
+    // Timeout wrapper to avoid puppeteer hanging indefinitely
+    const mediaPromise = msg.downloadMedia();
+    const timeoutPromise = new Promise<null>((_, reject) =>
+      setTimeout(() => reject(new Error('Media download timed out')), 30_000),
+    );
+
+    let media;
+    try {
+      media = await Promise.race([mediaPromise, timeoutPromise]);
+    } catch {
+      res.status(504).json({ error: 'Media download timed out. Try again later.' });
+      return;
+    }
+
     if (!media) {
       res.status(404).json({ error: 'Media not available' });
       return;
