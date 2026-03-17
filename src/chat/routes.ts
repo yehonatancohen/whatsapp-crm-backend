@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authenticate } from '../shared/middleware/auth';
 import { validate } from '../shared/middleware/validate';
 import { ClientManager } from '../accounts/services/ClientManager';
+import { logger } from '../shared/logger';
 
 const router = Router();
 router.use(authenticate);
@@ -308,15 +309,23 @@ router.post('/:accountId/:chatId/add-participants', validate(addParticipantsSche
       return;
     }
 
+    // Log raw result for debugging
+    logger.info({ addParticipantsResult: JSON.stringify(result) }, 'addParticipants raw response');
+
     // Parse results per participant
+    // whatsapp-web.js returns: { 'number@c.us': { code: number, message: string, isInviteV4Sent: boolean } }
+    // OR it can return a nested structure: { status: number, participants: [...] }
     const results: Record<string, { success: boolean; message: string; inviteSent: boolean }> = {};
     if (typeof result === 'object' && result !== null) {
       for (const [id, info] of Object.entries(result as Record<string, any>)) {
-        const code = info?.code;
+        // info might be the status object directly, or might be nested under a key
+        const status = info?.code ?? info?.status;
+        const inviteSent = info?.isInviteV4Sent || info?.invite_v4_code_exp || false;
+        const msg = info?.message || info?.invite_code || '';
         results[id] = {
-          success: code === 200,
-          message: code === 200 ? 'Added' : code === 403 ? 'Privacy settings block adding' : code === 409 ? 'Already in group' : (info?.message || 'Failed'),
-          inviteSent: info?.isInviteV4Sent || false,
+          success: status === 200,
+          message: status === 200 ? 'Added' : status === 403 ? 'Privacy settings block adding' : status === 409 ? 'Already in group' : (typeof msg === 'string' ? msg : `Code: ${status}`),
+          inviteSent: !!inviteSent,
         };
       }
     }
