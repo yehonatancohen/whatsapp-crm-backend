@@ -228,13 +228,26 @@ router.get('/:accountId/:chatId/group-info', async (req: Request, res: Response,
     const groupChat = chat as any; // GroupChat type
     const myNumber = client.info?.wid?._serialized;
 
-    const participants = (groupChat.participants || []).map((p: any) => ({
-      id: p.id._serialized,
-      isAdmin: p.isAdmin || false,
-      isSuperAdmin: p.isSuperAdmin || false,
-    }));
+    // Resolve contact names in parallel
+    const rawParticipants = groupChat.participants || [];
+    const participants = await Promise.all(
+      rawParticipants.map(async (p: any) => {
+        const pid = p.id._serialized;
+        let name: string | undefined;
+        try {
+          const contact = await client.getContactById(pid);
+          name = contact.name || contact.pushname || undefined;
+        } catch { /* ignore */ }
+        return {
+          id: pid,
+          name,
+          isAdmin: p.isAdmin || false,
+          isSuperAdmin: p.isSuperAdmin || false,
+        };
+      }),
+    );
 
-    const me = participants.find((p: any) => p.id === myNumber);
+    const me = participants.find((p) => p.id === myNumber);
 
     res.json({
       name: chat.name,
