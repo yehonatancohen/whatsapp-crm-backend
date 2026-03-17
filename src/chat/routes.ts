@@ -242,7 +242,12 @@ router.get('/:accountId/:chatId/group-info', async (req: Request, res: Response,
       participantCount: participants.length,
       participants,
       iAmAdmin: me?.isAdmin || me?.isSuperAdmin || false,
-      canAnyoneAdd: !groupChat.groupMetadata?.restrict,
+      canAnyoneAdd: groupChat.groupMetadata?.memberAddMode === 'all_member_add',
+      settings: {
+        messagesAdminsOnly: !!groupChat.groupMetadata?.announce,
+        infoAdminsOnly: !!groupChat.groupMetadata?.restrict,
+        addMembersAdminsOnly: groupChat.groupMetadata?.memberAddMode === 'admin_add',
+      },
     });
   } catch (err) {
     next(err);
@@ -283,7 +288,7 @@ router.post('/:accountId/:chatId/add-participants', validate(addParticipantsSche
     const participants = groupChat.participants || [];
     const me = participants.find((p: any) => p.id._serialized === myNumber);
     const iAmAdmin = me?.isAdmin || me?.isSuperAdmin || false;
-    const canAnyoneAdd = !groupChat.groupMetadata?.restrict;
+    const canAnyoneAdd = groupChat.groupMetadata?.memberAddMode === 'all_member_add';
 
     if (!iAmAdmin && !canAnyoneAdd) {
       res.status(403).json({ error: 'Only admins can add participants to this group' });
@@ -309,23 +314,30 @@ router.post('/:accountId/:chatId/add-participants', validate(addParticipantsSche
       return;
     }
 
-    // Log raw result for debugging
-    logger.info({ addParticipantsResult: JSON.stringify(result) }, 'addParticipants raw response');
+    // whatsapp-web.js returns a string error when preconditions fail (e.g. not admin)
+    if (typeof result === 'string') {
+      logger.warn({ result }, 'addParticipants returned error string');
+      res.status(400).json({ error: result });
+      return;
+    }
 
     // Parse results per participant
     // whatsapp-web.js returns: { 'number@c.us': { code: number, message: string, isInviteV4Sent: boolean } }
-    // OR it can return a nested structure: { status: number, participants: [...] }
     const results: Record<string, { success: boolean; message: string; inviteSent: boolean }> = {};
     if (typeof result === 'object' && result !== null) {
       for (const [id, info] of Object.entries(result as Record<string, any>)) {
-        // info might be the status object directly, or might be nested under a key
-        const status = info?.code ?? info?.status;
-        const inviteSent = info?.isInviteV4Sent || info?.invite_v4_code_exp || false;
-        const msg = info?.message || info?.invite_code || '';
+        const code = info?.code;
         results[id] = {
-          success: status === 200,
-          message: status === 200 ? 'Added' : status === 403 ? 'Privacy settings block adding' : status === 409 ? 'Already in group' : (typeof msg === 'string' ? msg : `Code: ${status}`),
-          inviteSent: !!inviteSent,
+          success: code === 200,
+          message: code === 200 ? 'Added'
+            : code === 403 ? 'Privacy settings - invite sent instead'
+            : code === 404 ? 'Number not on WhatsApp'
+            : code === 408 ? 'Recently left the group'
+            : code === 409 ? 'Already in group'
+            : code === 417 ? 'Cannot add to community'
+            : code === 419 ? 'Group is full'
+            : (info?.message || `Error code: ${code}`),
+          inviteSent: info?.isInviteV4Sent || false,
         };
       }
     }
@@ -334,6 +346,112 @@ router.post('/:accountId/:chatId/add-participants', validate(addParticipantsSche
   } catch (err) {
     next(err);
   }
+});
+
+// ─── Group admin helper: verify admin status ──────────────────────────
+async function getAdminGroupChat(req: Request, res: Response) {
+  const { accountId, chatId } = req.params;
+  const manager = ClientManager.getInstance();
+  const instance = manager.getInstanceById(accountId);
+  if (!instance || instance.status !== 'AUTHENTICATED') {
+    res.status(400).json({ error: 'Account not authenticated' });
+    return null;
+  }
+  const client = instance.getClient();
+  if (!client) {
+    res.status(400).json({ error: 'WhatsApp client not ready' });
+    return null;
+  }
+  const chat = await client.getChatById(chatId);
+  if (!chat || !chat.isGroup) {
+    res.status(400).json({ error: 'Not a group chat' });
+    return null;
+  }
+  const groupChat = chat as any;
+  const myNumber = client.info?.wid?._serialized;
+  const me = (groupChat.participants || []).find((p: any) => p.id._serialized === myNumber);
+  if (!me?.isAdmin && !me?.isSuperAdmin) {
+    res.status(403).json({ error: 'You must be a group admin' });
+    return null;
+  }
+  return groupChat;
+}
+
+// 6. Promote participants to admin
+router.post('/:accountId/:chatId/promote', validate(z.object({ participantIds: z.array(z.string().min(1)).min(1).max(10) })), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const groupChat = await getAdminGroupChat(req, res);
+    if (!groupChat) return;
+    try {
+      await groupChat.promoteParticipants(req.body.participantIds);
+    } catch {
+      res.status(502).json({ error: 'Failed to promote participants' });
+      return;
+    }
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// 7. Demote participants from admin
+router.post('/:accountId/:chatId/demote', validate(z.object({ participantIds: z.array(z.string().min(1)).min(1).max(10) })), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const groupChat = await getAdminGroupChat(req, res);
+    if (!groupChat) return;
+    try {
+      await groupChat.demoteParticipants(req.body.participantIds);
+    } catch {
+      res.status(502).json({ error: 'Failed to demote participants' });
+      return;
+    }
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// 8. Remove participants from group
+router.post('/:accountId/:chatId/remove-participants', validate(z.object({ participantIds: z.array(z.string().min(1)).min(1).max(10) })), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const groupChat = await getAdminGroupChat(req, res);
+    if (!groupChat) return;
+    try {
+      await groupChat.removeParticipants(req.body.participantIds);
+    } catch {
+      res.status(502).json({ error: 'Failed to remove participants' });
+      return;
+    }
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// 9. Update group settings (admin only)
+const groupSettingsSchema = z.object({
+  subject: z.string().min(1).max(100).optional(),
+  description: z.string().max(512).optional(),
+  messagesAdminsOnly: z.boolean().optional(),
+  infoAdminsOnly: z.boolean().optional(),
+  addMembersAdminsOnly: z.boolean().optional(),
+});
+
+router.patch('/:accountId/:chatId/group-settings', validate(groupSettingsSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const groupChat = await getAdminGroupChat(req, res);
+    if (!groupChat) return;
+
+    const { subject, description, messagesAdminsOnly, infoAdminsOnly, addMembersAdminsOnly } = req.body;
+    const results: Record<string, boolean> = {};
+
+    try {
+      if (subject !== undefined) results.subject = await groupChat.setSubject(subject);
+      if (description !== undefined) results.description = await groupChat.setDescription(description);
+      if (messagesAdminsOnly !== undefined) results.messagesAdminsOnly = await groupChat.setMessagesAdminsOnly(messagesAdminsOnly);
+      if (infoAdminsOnly !== undefined) results.infoAdminsOnly = await groupChat.setInfoAdminsOnly(infoAdminsOnly);
+      if (addMembersAdminsOnly !== undefined) results.addMembersAdminsOnly = await groupChat.setAddMembersAdminsOnly(addMembersAdminsOnly);
+    } catch {
+      res.status(502).json({ error: 'Failed to update some group settings', results });
+      return;
+    }
+
+    res.json({ success: true, results });
+  } catch (err) { next(err); }
 });
 
 export default router;
