@@ -36,28 +36,35 @@ function getNowInTimezone(tz: string): { hhmm: string; dayOfWeek: number; dateKe
 
   const dateKey = `${get('year')}-${get('month')}-${get('day')}`;
 
-  return { hhmm, dayOfWeek, dateKey };
+  const result = { hhmm, dayOfWeek, dateKey };
+  logger.info({ tz, ...result, localTime: now.toISOString() }, 'Calculated time in timezone');
+  return result;
 }
 
 /**
  * Check if a promotion should fire right now.
  */
 function shouldFireNow(
+  promotionId: string,
   sendTimes: string[],
   daysOfWeek: number[],
   tz: string,
 ): { fire: boolean; matchedTime: string; dateKey: string } {
   const { hhmm, dayOfWeek, dateKey } = getNowInTimezone(tz);
 
-  logger.debug({ tz, hhmm, dayOfWeek, dateKey, sendTimes, daysOfWeek }, 'Checking promotion firing condition');
-
   // Check day-of-week (empty array = every day)
   if (daysOfWeek.length > 0 && !daysOfWeek.includes(dayOfWeek)) {
+    logger.info({ promotionId, dayOfWeek, daysOfWeek }, 'Promotion skipped: day of week mismatch');
     return { fire: false, matchedTime: '', dateKey };
   }
 
   // Check if current HH:mm matches any sendTime
   const matched = sendTimes.find((t) => t === hhmm);
+  if (!matched) {
+    // Only log this at debug to avoid spamming every minute for every promotion
+    logger.debug({ promotionId, hhmm, sendTimes }, 'Promotion skipped: time mismatch');
+  }
+
   return { fire: !!matched, matchedTime: matched || '', dateKey };
 }
 
@@ -79,20 +86,21 @@ export function createPromotionSchedulerWorker(): Worker {
         },
       });
 
-      logger.debug({ activePromotionsCount: promotions.length }, 'Fetched active promotions');
+      logger.info({ activePromotionsCount: promotions.length }, 'Checked active promotions');
 
       for (const promotion of promotions) {
         try {
           if (promotion.groups.length === 0 || promotion.messages.length === 0) {
-            logger.warn({ promotionId: promotion.id }, 'Promotion has no groups or active messages - skipping');
+            logger.info({ promotionId: promotion.id }, 'Promotion has no groups or active messages - skipping');
             continue;
           }
           if (promotion.accountIds.length === 0) {
-            logger.warn({ promotionId: promotion.id }, 'Promotion has no accounts assigned - skipping');
+            logger.info({ promotionId: promotion.id }, 'Promotion has no accounts assigned - skipping');
             continue;
           }
 
           const { fire, matchedTime, dateKey } = shouldFireNow(
+            promotion.id,
             promotion.sendTimes,
             promotion.daysOfWeek,
             promotion.timezone,
@@ -103,7 +111,10 @@ export function createPromotionSchedulerWorker(): Worker {
           // Dedup via Redis key — prevent double-fire within same minute
           const dedupKey = `promotion:dedup:${promotion.id}:${dateKey}:${matchedTime}`;
           const alreadyFired = await redisInstance.get(dedupKey);
-          if (alreadyFired) continue;
+          if (alreadyFired) {
+            logger.info({ promotionId: promotion.id, matchedTime }, 'Promotion already fired for this minute - skipping');
+            continue;
+          }
           await redisInstance.set(dedupKey, '1', 'EX', 120);
 
           logger.info(
