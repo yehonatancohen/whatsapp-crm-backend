@@ -26,15 +26,16 @@ export async function launchStealthBrowser(proxy?: string, userDataDir?: string)
     args.push(`--proxy-server=${proxy}`);
   }
 
-  // Clean up Chromium lock file if it exists (prevents "Profile in use" error after crashes)
+  // Clean up Chromium lock files (prevents "Profile in use" error after crashes).
+  // Note: SingletonLock is a symlink on Linux — fs.existsSync returns false for
+  // broken symlinks, so we must unlink unconditionally and catch ENOENT.
   if (userDataDir) {
-    const lockFile = path.join(userDataDir, 'SingletonLock');
-    try {
-      if (fs.existsSync(lockFile)) {
-        fs.unlinkSync(lockFile);
+    for (const lockName of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+      try {
+        fs.unlinkSync(path.join(userDataDir, lockName));
+      } catch {
+        // File doesn't exist — expected on clean starts
       }
-    } catch (err) {
-      // Ignore errors if file is already gone or inaccessible
     }
   }
 
