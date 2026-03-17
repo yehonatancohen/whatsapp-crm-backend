@@ -1,9 +1,20 @@
 import { prisma } from './shared/db';
 import { logger } from './shared/logger';
 import { redis } from './shared/redis';
+
+// Warmup
 import { warmupSchedulerQueue } from './warmup/warmupQueue';
-import { createSchedulerWorker } from './warmup/warmupWorker';
+import { createSchedulerWorker, createCycleWorker } from './warmup/warmupWorker';
 import { resetDailyCounts } from './warmup/warmupService';
+
+// Campaigns
+import { campaignSchedulerQueue } from './campaigns/campaignQueue';
+import { createCampaignSchedulerWorker, createCampaignProcessorWorker } from './campaigns/services/campaignWorker';
+
+// Promotions
+import { promotionSchedulerQueue } from './promotions/promotionQueue';
+import { createPromotionSchedulerWorker } from './promotions/services/promotionScheduler';
+import { createPromotionProcessorWorker } from './promotions/services/promotionWorker';
 
 async function start() {
   await prisma.$connect();
@@ -15,11 +26,23 @@ async function start() {
 
   // ─── Register BullMQ workers ──────────────────────────────────────────────
 
-  const schedulerWorker = createSchedulerWorker();
+  const workers = [
+    // Warmup
+    createSchedulerWorker(),
+    createCycleWorker(),
 
-  logger.info('Warmup scheduler worker registered');
+    // Campaigns
+    createCampaignSchedulerWorker(),
+    createCampaignProcessorWorker(),
 
-  // ─── Add repeatable scheduler job (every 60 seconds) ──────────────────────
+    // Promotions
+    createPromotionSchedulerWorker(),
+    createPromotionProcessorWorker(),
+  ];
+
+  logger.info('All workers registered (Warmup, Campaigns, Promotions)');
+
+  // ─── Add repeatable scheduler jobs (every 60 seconds) ─────────────────────
 
   await warmupSchedulerQueue.upsertJobScheduler(
     'warmup-scheduler-repeat',
@@ -27,27 +50,33 @@ async function start() {
     { name: 'warmup-tick' },
   );
 
-  logger.info('Warmup scheduler repeatable job started (every 60s)');
+  await campaignSchedulerQueue.upsertJobScheduler(
+    'campaign-scheduler-repeat',
+    { every: 60_000 },
+    { name: 'campaign-tick' },
+  );
+
+  await promotionSchedulerQueue.upsertJobScheduler(
+    'promotion-scheduler-repeat',
+    { every: 60_000 },
+    { name: 'promotion-tick' },
+  );
+
+  logger.info('All repeatable scheduler jobs started (every 60s)');
 
   // ─── Daily reset job (every 24 hours at midnight UTC) ─────────────────────
 
-  // Schedule a daily reset of messagesSentToday counters
-  // Using a simple setInterval since this is a lightweight operation
   const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
-
-  // Calculate ms until next midnight UTC
   const now = new Date();
   const nextMidnight = new Date(now);
   nextMidnight.setUTCHours(24, 0, 0, 0);
   const msUntilMidnight = nextMidnight.getTime() - now.getTime();
 
   setTimeout(() => {
-    // Run immediately at first midnight
     resetDailyCounts().catch((err) => {
       logger.error({ err }, 'Failed to reset daily warmup counts');
     });
 
-    // Then repeat every 24 hours
     setInterval(() => {
       resetDailyCounts().catch((err) => {
         logger.error({ err }, 'Failed to reset daily warmup counts');
@@ -60,13 +89,15 @@ async function start() {
     'Daily warmup counter reset scheduled',
   );
 
-  logger.info('Worker started — processing warmup jobs');
+  logger.info('Worker started — processing all background jobs');
 
   // ─── Graceful shutdown ────────────────────────────────────────────────────
 
   const shutdown = async () => {
     logger.info('Worker shutting down...');
-    await schedulerWorker.close();
+    for (const worker of workers) {
+      await worker.close();
+    }
     await prisma.$disconnect();
     process.exit(0);
   };
@@ -80,7 +111,6 @@ start().catch((err) => {
   process.exit(1);
 });
 
-// Keep the process alive
 process.on('unhandledRejection', (reason) => {
   logger.error({ reason }, 'Worker unhandled rejection');
 });
