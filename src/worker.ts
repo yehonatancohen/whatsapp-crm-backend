@@ -4,43 +4,29 @@ import { redis } from './shared/redis';
 
 // Warmup
 import { warmupSchedulerQueue } from './warmup/warmupQueue';
-import { createSchedulerWorker, createCycleWorker } from './warmup/warmupWorker';
+import { createSchedulerWorker } from './warmup/warmupWorker';
 import { resetDailyCounts } from './warmup/warmupService';
 
-// Campaigns
-import { campaignSchedulerQueue } from './campaigns/campaignQueue';
-import { createCampaignSchedulerWorker, createCampaignProcessorWorker } from './campaigns/services/campaignWorker';
-
-// Promotions
-import { promotionSchedulerQueue } from './promotions/promotionQueue';
-import { createPromotionSchedulerWorker } from './promotions/services/promotionScheduler';
-import { createPromotionProcessorWorker } from './promotions/services/promotionWorker';
-
+/**
+ * The 'worker' container handles background tasks that DON'T require
+ * an active WhatsApp client instance (e.g. scheduling, daily resets).
+ *
+ * Workers that DO require a client (campaignProcessor, promotionProcessor, cycleWorker)
+ * are hosted in the 'api' container where the ClientManager resides.
+ */
 async function start() {
   await prisma.$connect();
   logger.info('Worker connected to PostgreSQL');
 
-  // Verify Redis is reachable
   await redis.ping();
   logger.info('Worker connected to Redis');
 
   // ─── Register BullMQ workers ──────────────────────────────────────────────
 
-  const workers = [
-    // Warmup
-    createSchedulerWorker(),
-    createCycleWorker(),
+  // Warmup Scheduler (finds accounts to warmup and enqueues jobs)
+  const schedulerWorker = createSchedulerWorker();
 
-    // Campaigns
-    createCampaignSchedulerWorker(),
-    createCampaignProcessorWorker(),
-
-    // Promotions
-    createPromotionSchedulerWorker(),
-    createPromotionProcessorWorker(),
-  ];
-
-  logger.info('All workers registered (Warmup, Campaigns, Promotions)');
+  logger.info('Background scheduler workers registered');
 
   // ─── Add repeatable scheduler jobs (every 60 seconds) ─────────────────────
 
@@ -50,19 +36,12 @@ async function start() {
     { name: 'warmup-tick' },
   );
 
-  await campaignSchedulerQueue.upsertJobScheduler(
-    'campaign-scheduler-repeat',
-    { every: 60_000 },
-    { name: 'campaign-tick' },
-  );
+  // Note: Campaign and Promotion schedulers are also running in the API container 
+  // for now since they were already there, but they could be moved here.
+  // To avoid double-scheduling, we keep them in API or move them here.
+  // Given the API needs to know about them for immediate starts, keeping them there is okay.
 
-  await promotionSchedulerQueue.upsertJobScheduler(
-    'promotion-scheduler-repeat',
-    { every: 60_000 },
-    { name: 'promotion-tick' },
-  );
-
-  logger.info('All repeatable scheduler jobs started (every 60s)');
+  logger.info('Warmup scheduler repeatable job started (every 60s)');
 
   // ─── Daily reset job (every 24 hours at midnight UTC) ─────────────────────
 
@@ -89,15 +68,11 @@ async function start() {
     'Daily warmup counter reset scheduled',
   );
 
-  logger.info('Worker started — processing all background jobs');
-
-  // ─── Graceful shutdown ────────────────────────────────────────────────────
+  logger.info('Worker started — processing background scheduling jobs');
 
   const shutdown = async () => {
     logger.info('Worker shutting down...');
-    for (const worker of workers) {
-      await worker.close();
-    }
+    await schedulerWorker.close();
     await prisma.$disconnect();
     process.exit(0);
   };

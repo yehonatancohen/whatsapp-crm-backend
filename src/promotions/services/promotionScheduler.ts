@@ -25,8 +25,10 @@ function getNowInTimezone(tz: string): { hhmm: string; dayOfWeek: number; dateKe
   const get = (type: string) => parts.find((p) => p.type === type)?.value || '';
 
   const hh = get('hour').padStart(2, '0');
+  // Handle case where some environments return '24' for midnight
+  const normalizedHh = hh === '24' ? '00' : hh;
   const mm = get('minute').padStart(2, '0');
-  const hhmm = `${hh}:${mm}`;
+  const hhmm = `${normalizedHh}:${mm}`;
 
   // Map JS Date day to 0=Sunday..6=Saturday
   const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
@@ -47,6 +49,8 @@ function shouldFireNow(
 ): { fire: boolean; matchedTime: string; dateKey: string } {
   const { hhmm, dayOfWeek, dateKey } = getNowInTimezone(tz);
 
+  logger.debug({ tz, hhmm, dayOfWeek, dateKey, sendTimes, daysOfWeek }, 'Checking promotion firing condition');
+
   // Check day-of-week (empty array = every day)
   if (daysOfWeek.length > 0 && !daysOfWeek.includes(dayOfWeek)) {
     return { fire: false, matchedTime: '', dateKey };
@@ -65,7 +69,7 @@ export function createPromotionSchedulerWorker(): Worker {
   const worker = new Worker(
     'promotion-scheduler',
     async (_job: Job) => {
-      logger.debug('Promotion scheduler tick');
+      logger.info('Promotion scheduler tick');
 
       const promotions = await prisma.groupPromotion.findMany({
         where: { isActive: true },
@@ -75,10 +79,18 @@ export function createPromotionSchedulerWorker(): Worker {
         },
       });
 
+      logger.debug({ activePromotionsCount: promotions.length }, 'Fetched active promotions');
+
       for (const promotion of promotions) {
         try {
-          if (promotion.groups.length === 0 || promotion.messages.length === 0) continue;
-          if (promotion.accountIds.length === 0) continue;
+          if (promotion.groups.length === 0 || promotion.messages.length === 0) {
+            logger.warn({ promotionId: promotion.id }, 'Promotion has no groups or active messages - skipping');
+            continue;
+          }
+          if (promotion.accountIds.length === 0) {
+            logger.warn({ promotionId: promotion.id }, 'Promotion has no accounts assigned - skipping');
+            continue;
+          }
 
           const { fire, matchedTime, dateKey } = shouldFireNow(
             promotion.sendTimes,
