@@ -25,6 +25,7 @@ import campaignsRouter from './campaigns/routes';
 import chatRouter from './chat/routes';
 import promotionsRouter from './promotions/routes';
 import subscriptionsRouter from './subscriptions/routes';
+import linkPreviewRouter from './shared/routes/linkPreview';
 // import stripeWebhookRouter from './subscriptions/webhookRoute';
 
 // Services
@@ -73,6 +74,7 @@ app.use('/api/warmup', authenticate, requireVerified, requireActiveSubscription,
 app.use('/api/campaigns', authenticate, requireVerified, requireActiveSubscription, campaignsRouter);
 app.use('/api/chat', authenticate, requireVerified, requireActiveSubscription, chatRouter);
 app.use('/api/promotions', authenticate, requireVerified, requireActiveSubscription, promotionsRouter);
+app.use('/api/utils', authenticate, linkPreviewRouter);
 
 // Health check
 app.get('/api/health', async (_req, res) => {

@@ -1,5 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
+import multer from 'multer';
+import { MessageMedia } from 'whatsapp-web.js';
 import { authenticate } from '../shared/middleware/auth';
 import { validate } from '../shared/middleware/validate';
 import { ClientManager } from './services/ClientManager';
@@ -167,6 +169,143 @@ router.post('/:id/reconnect', async (req: Request, res: Response, next: NextFunc
     const manager = ClientManager.getInstance();
     const account = await manager.reconnectAccount(req.params.id, req.user!.userId);
     res.json(account);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Profile Management ──────────────────────────────────────────────────────
+
+const profileUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only JPEG, PNG and WebP images are accepted'));
+    }
+  },
+});
+
+const updateProfileSchema = z.object({
+  displayName: z.string().min(1).max(25).optional(),
+  status: z.string().max(139).optional(),
+});
+
+/** Helper: get an authenticated client for the given account, with ownership check. */
+async function getAuthenticatedClient(req: Request) {
+  const manager = ClientManager.getInstance();
+  const isAdmin = req.user!.role === 'ADMIN';
+  const account = await manager.getAccount(
+    req.params.id,
+    isAdmin ? undefined : req.user!.userId,
+  );
+  if (!account) throw new NotFoundError('Account');
+
+  const instance = manager.getInstanceById(req.params.id);
+  if (!instance || instance.status !== 'AUTHENTICATED') {
+    return null;
+  }
+  return instance.getClient();
+}
+
+// GET /api/accounts/:id/profile
+router.get('/:id/profile', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const client = await getAuthenticatedClient(req);
+    if (!client) {
+      res.status(409).json({ error: 'Account is not connected' });
+      return;
+    }
+
+    let profilePicUrl: string | null = null;
+    try {
+      const url = await client.getProfilePicUrl(client.info.wid._serialized);
+      profilePicUrl = url || null;
+    } catch {
+      // Profile picture may not be set
+    }
+
+    res.json({
+      displayName: client.info.pushname || null,
+      phoneNumber: client.info.wid.user || null,
+      profilePicUrl,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/accounts/:id/profile
+router.post(
+  '/:id/profile',
+  validate(updateProfileSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const client = await getAuthenticatedClient(req);
+      if (!client) {
+        res.status(409).json({ error: 'Account is not connected' });
+        return;
+      }
+
+      const { displayName, status } = req.body;
+      const results: Record<string, boolean> = {};
+
+      if (displayName !== undefined) {
+        results.displayName = await client.setDisplayName(displayName);
+      }
+      if (status !== undefined) {
+        await client.setStatus(status);
+        results.status = true;
+      }
+
+      res.json({ success: true, results });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// POST /api/accounts/:id/profile-picture
+router.post(
+  '/:id/profile-picture',
+  profileUpload.single('image'),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const client = await getAuthenticatedClient(req);
+      if (!client) {
+        res.status(409).json({ error: 'Account is not connected' });
+        return;
+      }
+
+      if (!req.file) {
+        res.status(400).json({ error: 'No image provided' });
+        return;
+      }
+
+      const base64 = req.file.buffer.toString('base64');
+      const media = new MessageMedia(req.file.mimetype, base64, req.file.originalname);
+      const success = await client.setProfilePicture(media);
+
+      res.json({ success });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// DELETE /api/accounts/:id/profile-picture
+router.delete('/:id/profile-picture', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const client = await getAuthenticatedClient(req);
+    if (!client) {
+      res.status(409).json({ error: 'Account is not connected' });
+      return;
+    }
+
+    const success = await client.deleteProfilePicture();
+    res.json({ success });
   } catch (err) {
     next(err);
   }
