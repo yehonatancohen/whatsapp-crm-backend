@@ -97,32 +97,40 @@ export class ClientManager {
     if (data.isWarmupEnabled !== undefined) updateData.isWarmupEnabled = data.isWarmupEnabled;
     if (data.proxy !== undefined) updateData.proxy = data.proxy;
 
-    if (data.label && data.label !== account.label) {
+    const labelChanged = data.label && data.label !== account.label;
+    const proxyChanged = data.proxy !== undefined && data.proxy !== account.proxy;
+    const needsRestart = labelChanged || proxyChanged;
+
+    if (labelChanged) {
       // Check if new label already exists for this user
       const existing = await prisma.account.findFirst({
         where: { userId, label: data.label, id: { not: accountId } },
       });
       if (existing) throw new ConflictError(`Account with label "${data.label}" already exists`);
+      updateData.label = data.label;
+    }
 
-      // Rename session directory if it exists
+    // Destroy the running instance before any filesystem changes
+    if (needsRestart) {
+      const existingInstance = this.instances.get(accountId);
+      if (existingInstance) {
+        await existingInstance.destroy();
+        this.instances.delete(accountId);
+      }
+    }
+
+    // Rename session directory if label changed
+    if (labelChanged) {
       const oldSessionDir = path.resolve('.wwebjs_auth', `session-${account.label}`);
       const newSessionDir = path.resolve('.wwebjs_auth', `session-${data.label}`);
-
       try {
         if (fs.existsSync(oldSessionDir)) {
-          // If instance is running, we must stop it before renaming
-          const instance = this.instances.get(accountId);
-          if (instance) {
-            await instance.destroy();
-          }
           fs.renameSync(oldSessionDir, newSessionDir);
           logger.info({ accountId, oldLabel: account.label, newLabel: data.label }, 'Renamed session directory');
         }
       } catch (err) {
         logger.error({ accountId, err }, 'Failed to rename session directory');
       }
-
-      updateData.label = data.label;
     }
 
     const updated = await prisma.account.update({
@@ -130,13 +138,8 @@ export class ClientManager {
       data: updateData,
     });
 
-    // If we changed label or proxy, we should re-initialize the instance
-    if (data.label || data.proxy !== undefined) {
-      const existingInstance = this.instances.get(accountId);
-      if (existingInstance) {
-        await existingInstance.destroy();
-      }
-
+    // Re-initialize the instance if label or proxy changed
+    if (needsRestart) {
       const eventHandlers: AccountEventHandlers = {
         onStatusChange: (id, status, error) => this.handleStatusChange(id, userId, status, error),
         onQr: (id, qrCode) => emitToUser(userId, 'account:qr', { id, qrCode }),
@@ -152,8 +155,7 @@ export class ClientManager {
         eventHandlers
       );
       this.instances.set(accountId, newInstance);
-      
-      // Re-init
+
       newInstance.initialize().catch((err) => {
         logger.error({ accountId, err }, 'Post-update init error');
       });
