@@ -75,6 +75,13 @@ enum PlanTier {
   ENTERPRISE
 }
 
+enum PromotionSendStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+}
+
 enum ActivityType {
   ACCOUNT_CREATED
   ACCOUNT_DELETED
@@ -119,6 +126,7 @@ model User {
   accounts      Account[]
   contactLists  ContactList[]
   campaigns     Campaign[]
+  promotions    GroupPromotion[]
   activityLogs  ActivityLog[]
   refreshTokens RefreshToken[]
   subscription  Subscription?
@@ -318,4 +326,78 @@ model ActivityLog {
   @@index([userId, createdAt])
   @@index([type, createdAt])
   @@index([createdAt])
+}
+
+// ─── Group Promotions ───────────────────────────────────────────────
+
+model GroupPromotion {
+  id                   String    @id @default(cuid())
+  name                 String
+  isActive             Boolean   @default(true)
+  sendTimes            String[]  @default([])
+  daysOfWeek           Int[]     @default([])
+  timezone             String    @default("Asia/Jerusalem")
+  accountIds           String[]  @default([])
+  dailyLimitPerAccount Int       @default(50)
+  messagesPerMinute    Int       @default(2)
+  lastSentAt           DateTime?
+  totalSendCount       Int       @default(0)
+  userId               String
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  user     User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages GroupPromotionMessage[]
+  groups   GroupPromotionGroup[]
+  logs     GroupPromotionLog[]
+
+  @@index([userId])
+  @@index([isActive])
+}
+
+model GroupPromotionMessage {
+  id          String   @id @default(cuid())
+  content     String
+  mediaUrl    String?
+  isActive    Boolean  @default(true)
+  promotionId String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  promotion GroupPromotion      @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  logs      GroupPromotionLog[]
+
+  @@index([promotionId])
+}
+
+model GroupPromotionGroup {
+  id          String @id @default(cuid())
+  groupJid    String
+  groupName   String?
+  promotionId String
+
+  promotion GroupPromotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+
+  @@index([promotionId])
+}
+
+model GroupPromotionLog {
+  id           String              @id @default(cuid())
+  status       PromotionSendStatus @default(PENDING)
+  resolvedText String?
+  errorMessage String?
+  sentAt       DateTime?
+  groupJid     String
+  groupName    String?
+  accountId    String?
+  messageId    String?
+  promotionId  String
+  createdAt    DateTime            @default(now())
+
+  promotion GroupPromotion         @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  message   GroupPromotionMessage? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([promotionId, createdAt])
+  @@index([accountId, createdAt])
+  @@index([status])
 }

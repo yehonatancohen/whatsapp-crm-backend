@@ -73,6 +73,7 @@ export async function simulateHumanSend(
     client: Client,
     chatId: string,
     text: string,
+    sendOptions?: Record<string, unknown>,
 ): Promise<void> {
     // 1. Appear online
     await client.sendPresenceAvailable();
@@ -90,6 +91,6 @@ export async function simulateHumanSend(
     const typingDuration = calculateTypingDelay(text);
     await sleep(typingDuration);
 
-    // 5. Send the actual message
-    await chat.sendMessage(text);
+    // 5. Send the actual message (pass optional sendOptions e.g. { linkPreview: true })
+    await chat.sendMessage(text, sendOptions);
 }

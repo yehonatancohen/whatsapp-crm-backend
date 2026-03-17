@@ -23,6 +23,7 @@ import usersRouter from './users/routes';
 import activityRouter from './activity/routes';
 import campaignsRouter from './campaigns/routes';
 import chatRouter from './chat/routes';
+import promotionsRouter from './promotions/routes';
 import subscriptionsRouter from './subscriptions/routes';
 // import stripeWebhookRouter from './subscriptions/webhookRoute';
 
@@ -31,6 +32,9 @@ import { ClientManager } from './accounts/services/ClientManager';
 import { createCycleWorker } from './warmup/warmupWorker';
 import { createCampaignProcessorWorker, createCampaignSchedulerWorker } from './campaigns/services/campaignWorker';
 import { campaignSchedulerQueue } from './campaigns/campaignQueue';
+import { createPromotionProcessorWorker } from './promotions/services/promotionWorker';
+import { createPromotionSchedulerWorker } from './promotions/services/promotionScheduler';
+import { promotionSchedulerQueue } from './promotions/promotionQueue';
 
 // Validate environment variables
 validateEnv();
@@ -68,6 +72,7 @@ app.use('/api/contacts', authenticate, requireVerified, requireActiveSubscriptio
 app.use('/api/warmup', authenticate, requireVerified, requireActiveSubscription, warmupRouter);
 app.use('/api/campaigns', authenticate, requireVerified, requireActiveSubscription, campaignsRouter);
 app.use('/api/chat', authenticate, requireVerified, requireActiveSubscription, chatRouter);
+app.use('/api/promotions', authenticate, requireVerified, requireActiveSubscription, promotionsRouter);
 
 // Health check
 app.get('/api/health', async (_req, res) => {
@@ -129,6 +134,16 @@ async function start() {
   );
   logger.info('Campaign workers registered');
 
+  // Start promotion workers
+  const promotionProcessor = createPromotionProcessorWorker();
+  const promotionScheduler = createPromotionSchedulerWorker();
+  await promotionSchedulerQueue.upsertJobScheduler(
+    'promotion-scheduler-repeat',
+    { every: 60_000 },
+    { name: 'promotion-tick' },
+  );
+  logger.info('Promotion workers registered');
+
   httpServer.listen(config.port, () => {
     logger.info(`Backend running on http://localhost:${config.port}`);
   });
@@ -139,6 +154,8 @@ async function start() {
     await cycleWorker.close();
     await campaignProcessor.close();
     await campaignScheduler.close();
+    await promotionProcessor.close();
+    await promotionScheduler.close();
 
     // Destroy all WhatsApp instances so sessions persist across restarts
     const allInstances = manager.getAllInstances();
