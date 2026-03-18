@@ -69,7 +69,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const search = (req.query.search as string) || undefined;
     const tags = req.query.tags ? (req.query.tags as string).split(',') : undefined;
 
-    const result = await listContacts({ page, limit, search, tags });
+    const result = await listContacts({ page, limit, search, tags, userId: req.user!.userId, isAdmin: req.user!.role === 'ADMIN' });
     res.json(result);
   } catch (err) {
     next(err);
@@ -82,7 +82,7 @@ router.post(
   validate(createContactSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const contact = await createContact(req.body.phoneNumber, req.body.name, req.body.tags);
+      const contact = await createContact(req.body.phoneNumber, req.body.name, req.body.tags, req.user!.userId);
       res.status(201).json(contact);
     } catch (err) {
       next(err);

@@ -7,10 +7,18 @@ interface ListContactsParams {
   limit?: number;
   search?: string;
   tags?: string[];
+  userId?: string;
+  isAdmin?: boolean;
 }
 
-export async function listContacts({ page = 1, limit = 50, search, tags }: ListContactsParams) {
+export async function listContacts({ page = 1, limit = 50, search, tags, userId, isAdmin = false }: ListContactsParams) {
   const where: Prisma.ContactWhereInput = {};
+
+  if (!isAdmin && userId) {
+    where.listEntries = {
+      some: { contactList: { userId } },
+    };
+  }
 
   if (search) {
     where.OR = [
@@ -44,14 +52,36 @@ export async function listContacts({ page = 1, limit = 50, search, tags }: ListC
   };
 }
 
-export async function createContact(phoneNumber: string, name?: string, tags?: string[]) {
+export async function createContact(phoneNumber: string, name?: string, tags?: string[], userId?: string) {
   const normalized = normalizePhone(phoneNumber);
-  return prisma.contact.create({
-    data: {
-      phoneNumber: normalized || phoneNumber,
-      name: name || null,
-      tags: tags || [],
-    },
+  const phone = normalized || phoneNumber;
+
+  const contact = await prisma.contact.upsert({
+    where: { phoneNumber: phone },
+    create: { phoneNumber: phone, name: name || null, tags: tags || [] },
+    update: {},
+  });
+
+  if (userId) {
+    await addToDefaultList(contact.id, userId);
+  }
+
+  return contact;
+}
+
+async function addToDefaultList(contactId: string, userId: string) {
+  let list = await prisma.contactList.findFirst({
+    where: { userId, name: 'All Contacts' },
+  });
+  if (!list) {
+    list = await prisma.contactList.create({
+      data: { name: 'All Contacts', userId },
+    });
+  }
+  await prisma.contactListEntry.upsert({
+    where: { contactId_contactListId: { contactId, contactListId: list.id } },
+    create: { contactId, contactListId: list.id },
+    update: {},
   });
 }
 
