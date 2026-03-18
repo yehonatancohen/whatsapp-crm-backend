@@ -10,7 +10,7 @@ services:
       - REDIS_URL=redis://redis:6379
       - JWT_SECRET=${JWT_SECRET}
       - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
-      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:5173,https://api.parties247.co.il,https://parties247.co.il,https://whatsapp-crm-frontend-plum.vercel.app}
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:5173,https://api.parties247.co.il,https://parties247.co.il,https://whatsapp-crm-frontend-plum.vercel.app,https://sheder.parties247.co.il}
       - NODE_ENV=production
       - RESEND_API_KEY=${RESEND_API_KEY:-}
       - FRONTEND_URL=${FRONTEND_URL:-https://parties247.co.il}
