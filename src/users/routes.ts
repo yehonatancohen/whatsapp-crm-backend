@@ -14,6 +14,7 @@ router.use(requireRole('ADMIN'));
 const updateUserSchema = z.object({
   role: z.enum(['ADMIN', 'USER']).optional(),
   isActive: z.boolean().optional(),
+  planTier: z.enum(['STARTER', 'PRO', 'ENTERPRISE']).optional(),
 });
 
 // GET /api/users/stats/overview
@@ -95,12 +96,32 @@ router.patch(
   validate(updateUserSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const user = await prisma.user.findUnique({ where: { id: req.params.id } });
+      const user = await prisma.user.findUnique({
+        where: { id: req.params.id },
+        include: { subscription: true },
+      });
       if (!user) throw new NotFoundError('User');
 
-      const updated = await prisma.user.update({
+      const { planTier, ...userData } = req.body;
+
+      // Update user fields (role, isActive) if provided
+      if (Object.keys(userData).length > 0) {
+        await prisma.user.update({
+          where: { id: req.params.id },
+          data: userData,
+        });
+      }
+
+      // Update subscription plan tier if provided
+      if (planTier && user.subscription) {
+        await prisma.subscription.update({
+          where: { id: user.subscription.id },
+          data: { planTier },
+        });
+      }
+
+      const updated = await prisma.user.findUnique({
         where: { id: req.params.id },
-        data: req.body,
         select: {
           id: true,
           email: true,
@@ -108,6 +129,9 @@ router.patch(
           role: true,
           isActive: true,
           createdAt: true,
+          subscription: {
+            select: { planTier: true, status: true, trialEndsAt: true },
+          },
         },
       });
       res.json(updated);
