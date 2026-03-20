@@ -5,6 +5,7 @@ import { requireRole } from '../shared/middleware/rbac';
 import { validate } from '../shared/middleware/validate';
 import { prisma } from '../shared/db';
 import { NotFoundError } from '../shared/errors';
+import { generateAccessToken, generateRefreshToken } from '../auth/services/tokenService';
 
 const router = Router();
 
@@ -14,6 +15,7 @@ router.use(requireRole('ADMIN'));
 const updateUserSchema = z.object({
   role: z.enum(['ADMIN', 'USER']).optional(),
   isActive: z.boolean().optional(),
+  emailVerified: z.boolean().optional(),
   planTier: z.enum(['STARTER', 'PRO', 'ENTERPRISE']).optional(),
 });
 
@@ -128,6 +130,7 @@ router.patch(
           name: true,
           role: true,
           isActive: true,
+          emailVerified: true,
           createdAt: true,
           subscription: {
             select: { planTier: true, status: true, trialEndsAt: true },
@@ -158,6 +161,54 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
 
     await prisma.user.delete({ where: { id: req.params.id } });
     res.json({ message: 'User deleted' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/users/:id/impersonate
+router.post('/:id/impersonate', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const targetUser = await prisma.user.findUnique({
+      where: { id: req.params.id },
+    });
+
+    if (!targetUser) {
+      throw new NotFoundError('User');
+    }
+
+    if (!targetUser.isActive) {
+      res.status(400).json({ error: 'Cannot impersonate an inactive user' });
+      return;
+    }
+
+    const accessToken = generateAccessToken({
+      userId: targetUser.id,
+      email: targetUser.email,
+      role: targetUser.role,
+      emailVerified: targetUser.emailVerified,
+    });
+    const refreshToken = await generateRefreshToken(targetUser.id);
+
+    await prisma.activityLog.create({
+      data: {
+        type: 'USER_LOGIN',
+        message: `Admin ${req.user!.email} impersonated user ${targetUser.email}`,
+        userId: targetUser.id,
+        metadata: { impersonatedBy: req.user!.userId },
+      },
+    });
+
+    res.json({
+      user: {
+        id: targetUser.id,
+        email: targetUser.email,
+        name: targetUser.name,
+        role: targetUser.role,
+        emailVerified: targetUser.emailVerified,
+      },
+      tokens: { accessToken, refreshToken },
+    });
   } catch (err) {
     next(err);
   }
