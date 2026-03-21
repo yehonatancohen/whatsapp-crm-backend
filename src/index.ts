@@ -49,8 +49,38 @@ initSocket(httpServer);
 
 // Middleware
 app.set('trust proxy', 1);
-app.use(helmet());
-app.use(cors({ origin: config.corsOrigin, credentials: true }));
+
+// CORS must be before helmet and other middleware for preflight to work reliably
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps, curl, or same-origin)
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    const allowedOrigins = config.corsOrigin;
+    const isAllowed = allowedOrigins.includes(origin) || 
+                     allowedOrigins.includes('*') ||
+                     origin.endsWith('.parties247.co.il') ||
+                     origin === 'https://parties247.co.il';
+
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      logger.warn({ origin, allowedOrigins }, 'CORS blocked');
+      callback(null, false); // Don't throw error, just don't set CORS headers
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+}));
+
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  contentSecurityPolicy: false, // Disable CSP for now if it interferes
+}));
+
 app.use(requestLogger);
 
 // Stripe webhook needs raw body BEFORE json parser
