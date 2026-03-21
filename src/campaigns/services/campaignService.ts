@@ -21,6 +21,7 @@ export interface CreateCampaignData {
   messagesPerMinute?: number;
   dailyLimitPerAccount?: number;
   groupJids?: { jid: string; name?: string }[];
+  accountIds: string[];
 }
 
 export interface UpdateCampaignData {
@@ -81,6 +82,7 @@ export async function createCampaign(
       scheduledAt: data.scheduledAt ? new Date(data.scheduledAt) : null,
       messagesPerMinute: data.messagesPerMinute ?? 2,
       dailyLimitPerAccount: data.dailyLimitPerAccount ?? 50,
+      accountIds: data.accountIds,
       userId,
     },
   });

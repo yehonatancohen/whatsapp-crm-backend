@@ -237,6 +237,7 @@ model Campaign {
   deliveredCount       Int            @default(0)
   failedCount          Int            @default(0)
   contactListId        String?
+  accountIds           String[]       @default([])
   userId               String
   createdAt            DateTime       @default(now())
   updatedAt            DateTime       @updatedAt
@@ -402,7 +403,7 @@ model GroupPromotionMessage {
 }
 
 model GroupPromotionGroup {
-  id          String @id @default(cuid())
+  id          String  @id @default(cuid())
   groupJid    String
   groupName   String?
   promotionId String

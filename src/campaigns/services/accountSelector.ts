@@ -37,10 +37,10 @@ export async function selectAccount(
   campaignId: string,
   excludeAccountIds: string[] = [],
 ): Promise<{ id: string; userId: string } | null> {
-  // Fetch the campaign to know the user and daily limit
+  // Fetch the campaign to know the user, daily limit, and allowed accounts
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },
-    select: { userId: true, dailyLimitPerAccount: true },
+    select: { userId: true, dailyLimitPerAccount: true, accountIds: true },
   });
 
   if (!campaign) {
@@ -49,13 +49,20 @@ export async function selectAccount(
   }
 
   const eligibleLevels = getEligibleLevels();
+  
+  // Filter accountIds based on excludeAccountIds
+  const allowedIds = campaign.accountIds.filter((id) => !excludeAccountIds.includes(id));
+  if (allowedIds.length === 0 && campaign.accountIds.length > 0) {
+      return null;
+  }
 
-  // Get all authenticated accounts for this user
+  // Get all authenticated accounts for this user that are in the allowed list
+  // If campaign.accountIds is empty (legacy campaign), fall back to any account
   const accounts = await prisma.account.findMany({
     where: {
       userId: campaign.userId,
       status: 'AUTHENTICATED',
-      id: excludeAccountIds.length > 0 ? { notIn: excludeAccountIds } : undefined,
+      id: allowedIds.length > 0 ? { in: allowedIds } : (excludeAccountIds.length > 0 ? { notIn: excludeAccountIds } : undefined),
     },
     select: { id: true, userId: true },
   });
