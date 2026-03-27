@@ -17,6 +17,7 @@ const updateUserSchema = z.object({
   isActive: z.boolean().optional(),
   emailVerified: z.boolean().optional(),
   planTier: z.enum(['STARTER', 'PRO', 'ENTERPRISE']).optional(),
+  subscriptionStatus: z.enum(['TRIALING', 'ACTIVE', 'PAST_DUE', 'CANCELED', 'UNPAID']).optional(),
 });
 
 // GET /api/users/stats/overview
@@ -104,9 +105,9 @@ router.patch(
       });
       if (!user) throw new NotFoundError('User');
 
-      const { planTier, ...userData } = req.body;
+      const { planTier, subscriptionStatus, ...userData } = req.body;
 
-      // Update user fields (role, isActive) if provided
+      // Update user fields (role, isActive, emailVerified) if provided
       if (Object.keys(userData).length > 0) {
         await prisma.user.update({
           where: { id: req.params.id },
@@ -114,11 +115,18 @@ router.patch(
         });
       }
 
-      // Update subscription plan tier if provided
-      if (planTier && user.subscription) {
+      // Update subscription plan tier and/or status if provided
+      if ((planTier || subscriptionStatus) && user.subscription) {
         await prisma.subscription.update({
           where: { id: user.subscription.id },
-          data: { planTier },
+          data: {
+            ...(planTier && { planTier }),
+            ...(subscriptionStatus && {
+              status: subscriptionStatus,
+              // Clear trialEndsAt when ending a trial
+              ...(subscriptionStatus === 'ACTIVE' && { trialEndsAt: null }),
+            }),
+          },
         });
       }
 
