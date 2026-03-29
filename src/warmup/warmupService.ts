@@ -1,4 +1,4 @@
-import { WarmupLevel } from '@prisma/client';
+import { WarmupLevel, WarmupIntensity } from '@prisma/client';
 import { prisma } from '../shared/db';
 import { logger } from '../shared/logger';
 import { NotFoundError, ForbiddenError } from '../shared/errors';
@@ -7,6 +7,7 @@ import { getLevelConfig, getNextLevel, LevelConfig } from './levelConfig';
 export interface WarmupStatus {
   accountId: string;
   level: WarmupLevel;
+  intensity: WarmupIntensity;
   isWarmupEnabled: boolean;
   warmupStartedAt: Date | null;
   messagesSentToday: number;
@@ -21,6 +22,7 @@ export interface WarmupOverviewAccount {
   accountId: string;
   label: string;
   level: WarmupLevel;
+  intensity: WarmupIntensity;
   isEnabled: boolean;
   messagesSentToday: number;
   maxMessagesPerDay: number;
@@ -86,6 +88,7 @@ export async function getWarmupStatus(accountId: string): Promise<WarmupStatus> 
   const { account, progress } = await getAccountProgress(accountId);
 
   const level = progress ? progress.warmupLevel : 'L1';
+  const intensity = progress ? progress.warmupIntensity : WarmupIntensity.NORMAL;
   const warmupStartedAt = progress ? progress.warmupStartedAt : null;
   const messagesSentToday = progress ? progress.messagesSentToday : 0;
 
@@ -96,6 +99,7 @@ export async function getWarmupStatus(accountId: string): Promise<WarmupStatus> 
   return {
     accountId: account.id,
     level,
+    intensity,
     isWarmupEnabled: account.isWarmupEnabled,
     warmupStartedAt,
     messagesSentToday,
@@ -213,6 +217,64 @@ function calculateProgress(
   return Math.round((msgProgress + dayProgress) / 2);
 }
 
+/** Set the warmup intensity for an account. */
+export async function setWarmupIntensity(
+  accountId: string,
+  intensity: WarmupIntensity,
+  userId: string,
+  role: string,
+): Promise<WarmupStatus> {
+  const account = await getOwnedAccount(accountId, userId, role);
+  if (!account.phoneNumber) throw new NotFoundError('Account phone number');
+
+  await prisma.warmupProgress.upsert({
+    where: { phoneNumber: account.phoneNumber },
+    update: { warmupIntensity: intensity },
+    create: { phoneNumber: account.phoneNumber, warmupIntensity: intensity },
+  });
+
+  logger.info({ accountId, intensity }, 'Warmup intensity updated');
+  return getWarmupStatus(accountId);
+}
+
+/**
+ * Reset warmup progress to L1 with GHOST intensity for ban recovery.
+ * Also enables warmup so the slow recovery begins immediately.
+ */
+export async function startBanRecovery(
+  accountId: string,
+  userId: string,
+  role: string,
+): Promise<WarmupStatus> {
+  const account = await getOwnedAccount(accountId, userId, role);
+  if (!account.phoneNumber) throw new NotFoundError('Account phone number');
+
+  await prisma.warmupProgress.upsert({
+    where: { phoneNumber: account.phoneNumber },
+    update: {
+      warmupLevel: WarmupLevel.L1,
+      warmupIntensity: WarmupIntensity.GHOST,
+      warmupStartedAt: new Date(),
+      messagesSentToday: 0,
+      lastMessageAt: null,
+    },
+    create: {
+      phoneNumber: account.phoneNumber,
+      warmupLevel: WarmupLevel.L1,
+      warmupIntensity: WarmupIntensity.GHOST,
+      warmupStartedAt: new Date(),
+    },
+  });
+
+  await prisma.account.update({
+    where: { id: accountId },
+    data: { isWarmupEnabled: true },
+  });
+
+  logger.info({ accountId }, 'Ban recovery warmup started');
+  return getWarmupStatus(accountId);
+}
+
 /** Get warmup overview for all accounts belonging to a user (shows all authenticated, not just enabled). */
 export async function getWarmupOverview(userId: string, role: string): Promise<WarmupOverviewResponse> {
   const where = role === 'ADMIN'
@@ -230,6 +292,7 @@ export async function getWarmupOverview(userId: string, role: string): Promise<W
 
   for (const account of accounts) {
     let level: WarmupLevel = 'L1';
+    let intensity: WarmupIntensity = WarmupIntensity.NORMAL;
     let warmupStartedAt: Date | null = null;
     let messagesSentToday = 0;
 
@@ -237,6 +300,7 @@ export async function getWarmupOverview(userId: string, role: string): Promise<W
       const progress = await prisma.warmupProgress.findUnique({ where: { phoneNumber: account.phoneNumber } });
       if (progress) {
         level = progress.warmupLevel;
+        intensity = progress.warmupIntensity;
         warmupStartedAt = progress.warmupStartedAt;
         messagesSentToday = progress.messagesSentToday;
       }
@@ -253,6 +317,7 @@ export async function getWarmupOverview(userId: string, role: string): Promise<W
       accountId: account.id,
       label: account.label,
       level,
+      intensity,
       isEnabled: account.isWarmupEnabled,
       messagesSentToday,
       maxMessagesPerDay: levelCfg.maxMessagesPerDay,

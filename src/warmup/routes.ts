@@ -9,7 +9,10 @@ import {
   toggleWarmup,
   getWarmupHistory,
   getWarmupOverview,
+  setWarmupIntensity,
+  startBanRecovery,
 } from './warmupService';
+import { WarmupIntensity } from '@prisma/client';
 
 const router = Router();
 
@@ -18,6 +21,10 @@ router.use(authenticate);
 
 const toggleSchema = z.object({
   enabled: z.boolean(),
+});
+
+const intensitySchema = z.object({
+  intensity: z.enum(['GHOST', 'LOW', 'NORMAL', 'HIGH']),
 });
 
 /** Verify the account belongs to the requesting user (unless admin). */
@@ -80,5 +87,38 @@ router.post(
     }
   },
 );
+
+// POST /api/warmup/:accountId/intensity
+router.post(
+  '/:accountId/intensity',
+  validate(intensitySchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const status = await setWarmupIntensity(
+        req.params.accountId,
+        req.body.intensity as WarmupIntensity,
+        req.user!.userId,
+        req.user!.role,
+      );
+      res.json(status);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// POST /api/warmup/:accountId/ban-recovery
+router.post('/:accountId/ban-recovery', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const status = await startBanRecovery(
+      req.params.accountId,
+      req.user!.userId,
+      req.user!.role,
+    );
+    res.json(status);
+  } catch (err) {
+    next(err);
+  }
+});
 
 export default router;

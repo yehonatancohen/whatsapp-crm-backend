@@ -30,6 +30,13 @@ enum WarmupLevel {
   L5
 }
 
+enum WarmupIntensity {
+  GHOST
+  LOW
+  NORMAL
+  HIGH
+}
+
 enum CampaignType {
   DIRECT_MESSAGE
   GROUP_MESSAGE
@@ -169,13 +176,14 @@ model Account {
 }
 
 model WarmupProgress {
-  phoneNumber       String      @id
-  warmupLevel       WarmupLevel @default(L1)
+  phoneNumber       String          @id
+  warmupLevel       WarmupLevel     @default(L1)
+  warmupIntensity   WarmupIntensity @default(NORMAL)
   warmupStartedAt   DateTime?
-  messagesSentToday Int         @default(0)
+  messagesSentToday Int             @default(0)
   lastMessageAt     DateTime?
-  createdAt         DateTime    @default(now())
-  updatedAt         DateTime    @updatedAt
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
 }
 
 model Contact {

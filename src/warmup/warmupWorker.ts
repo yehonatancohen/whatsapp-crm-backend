@@ -5,7 +5,7 @@ import { prisma } from '../shared/db';
 import { logger } from '../shared/logger';
 import { emitToUser } from '../shared/socket';
 import { ClientManager } from '../accounts/services/ClientManager';
-import { getLevelConfig } from './levelConfig';
+import { getLevelConfig, applyIntensity } from './levelConfig';
 import { checkLevelUp, getAccountProgress } from './warmupService';
 import { warmupCycleQueue } from './warmupQueue';
 import { resolveSpintax } from './spintax';
@@ -78,7 +78,7 @@ export function createSchedulerWorker(): Worker {
 
         if (!progress) continue;
 
-        const levelConfig = getLevelConfig(progress.warmupLevel);
+        const levelConfig = applyIntensity(getLevelConfig(progress.warmupLevel), progress.warmupIntensity);
 
         // Check daily message limit
         if (progress.messagesSentToday >= levelConfig.maxMessagesPerDay) {
@@ -144,7 +144,7 @@ export function createCycleWorker(): Worker {
 
       if (!progress) return;
 
-      const levelConfig = getLevelConfig(progress.warmupLevel);
+      const levelConfig = applyIntensity(getLevelConfig(progress.warmupLevel), progress.warmupIntensity);
 
       // Re-check daily limit
       if (progress.messagesSentToday >= levelConfig.maxMessagesPerDay) {

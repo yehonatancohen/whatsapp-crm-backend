@@ -1,4 +1,4 @@
-import { WarmupLevel, WarmupActivityType } from '@prisma/client';
+import { WarmupLevel, WarmupActivityType, WarmupIntensity } from '@prisma/client';
 
 export interface LevelConfig {
   level: WarmupLevel;
@@ -75,6 +75,42 @@ const LEVEL_CONFIGS: Record<WarmupLevel, LevelConfig> = {
 /** Get the configuration for a given warmup level. */
 export function getLevelConfig(level: WarmupLevel): LevelConfig {
   return LEVEL_CONFIGS[level];
+}
+
+/**
+ * Apply an intensity modifier to a level config.
+ * GHOST: very slow recovery for banned accounts (20% messages, 5× intervals, messages only)
+ * LOW:   gentler warmup (50% messages, 2× intervals)
+ * NORMAL: default behaviour (unchanged)
+ * HIGH:  faster warmup (150% messages, 70% intervals)
+ */
+export function applyIntensity(config: LevelConfig, intensity: WarmupIntensity): LevelConfig {
+  switch (intensity) {
+    case WarmupIntensity.GHOST:
+      return {
+        ...config,
+        maxMessagesPerDay: Math.max(1, Math.floor(config.maxMessagesPerDay * 0.2)),
+        intervalMinMs: config.intervalMinMs * 5,
+        intervalMaxMs: config.intervalMaxMs * 5,
+        activities: [WarmupActivityType.MESSAGE_SENT],
+      };
+    case WarmupIntensity.LOW:
+      return {
+        ...config,
+        maxMessagesPerDay: Math.max(2, Math.floor(config.maxMessagesPerDay * 0.5)),
+        intervalMinMs: config.intervalMinMs * 2,
+        intervalMaxMs: config.intervalMaxMs * 2,
+      };
+    case WarmupIntensity.HIGH:
+      return {
+        ...config,
+        maxMessagesPerDay: Math.floor(config.maxMessagesPerDay * 1.5),
+        intervalMinMs: Math.max(60_000, Math.floor(config.intervalMinMs * 0.7)),
+        intervalMaxMs: Math.max(90_000, Math.floor(config.intervalMaxMs * 0.7)),
+      };
+    default: // NORMAL
+      return config;
+  }
 }
 
 /** Get the next warmup level, or null if already at max. */
