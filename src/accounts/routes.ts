@@ -157,6 +157,42 @@ router.post('/:id/reconnect', async (req: Request, res: Response, next: NextFunc
   }
 });
 
+// POST /api/accounts/:id/pairing-code
+// Requests a phone-number pairing code instead of QR scan.
+// The user enters this code in WhatsApp → Linked Devices → Link with phone number.
+router.post('/:id/pairing-code', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { phoneNumber } = req.body;
+    if (!phoneNumber || typeof phoneNumber !== 'string') {
+      res.status(400).json({ error: 'phoneNumber is required' });
+      return;
+    }
+
+    const manager = ClientManager.getInstance();
+    const account = await manager.getAccount(req.params.id, req.user!.userId);
+    if (!account) throw new NotFoundError('Account');
+
+    const instance = manager.getInstanceById(req.params.id);
+    if (!instance || instance.status !== 'QR_READY') {
+      res.status(409).json({ error: 'Account must be in QR_READY state to request a pairing code' });
+      return;
+    }
+
+    const client = instance.getClient();
+    if (!client) {
+      res.status(409).json({ error: 'WhatsApp client not initialised' });
+      return;
+    }
+
+    // Strip non-digits (e.g. leading +)
+    const digits = phoneNumber.replace(/\D/g, '');
+    const code = await (client as any).requestPairingCode(digits);
+    res.json({ code });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ─── Profile Management ──────────────────────────────────────────────────────
 
 const profileUpload = multer({
