@@ -94,11 +94,15 @@ export function createCampaignProcessorWorker(): Worker {
           const instance = manager.getInstanceById(candidate.id);
           if (instance && instance.status === 'AUTHENTICATED') {
             const groups = await instance.getGroups();
-            if (groups.some((g) => g.id === message.groupJid)) {
+            const group = groups.find((g) => g.id === message.groupJid);
+            if (group?.isAdmin) {
               account = candidate;
               break;
             }
-            logger.debug({ accountId: candidate.id, groupJid: message.groupJid }, 'Account not in target group, trying next');
+            logger.debug(
+              { accountId: candidate.id, groupJid: message.groupJid, inGroup: !!group, isAdmin: group?.isAdmin },
+              'Account is not an admin in target group, trying next',
+            );
           }
 
           excludeIds.push(candidate.id);
@@ -109,7 +113,7 @@ export function createCampaignProcessorWorker(): Worker {
 
       if (!account) {
         const errorMsg = campaign.type === 'GROUP_MESSAGE'
-          ? 'No connected account is a member of the target group. Make sure at least one account has joined the group.'
+          ? 'No connected account is an admin in the target group. Make sure at least one selected account is a group admin.'
           : 'No eligible accounts — all accounts may have reached their daily limit or are disconnected';
 
         await prisma.campaignMessage.update({

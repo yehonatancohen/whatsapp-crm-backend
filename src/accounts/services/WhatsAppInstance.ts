@@ -157,17 +157,24 @@ export class WhatsAppInstance {
     });
   }
 
-  async getGroups(): Promise<Array<{ id: string; name: string; participantsCount: number }>> {
+  async getGroups(): Promise<Array<{ id: string; name: string; participantsCount: number; isAdmin: boolean }>> {
     if (!this.client || this.status !== 'AUTHENTICATED') return [];
 
     const chats = await this.client.getChats();
+    const myId = this.client.info?.wid?._serialized;
+
     return chats
       .filter((chat) => chat.isGroup)
-      .map((chat) => ({
-        id: chat.id._serialized,
-        name: chat.name,
-        participantsCount: (chat as any).participants?.length ?? 0,
-      }));
+      .map((chat) => {
+        const participants: any[] = (chat as any).participants ?? [];
+        const me = participants.find((p: any) => p.id._serialized === myId);
+        return {
+          id: chat.id._serialized,
+          name: chat.name,
+          participantsCount: participants.length,
+          isAdmin: me?.isAdmin === true || me?.isSuperAdmin === true,
+        };
+      });
   }
 
   async destroy(): Promise<void> {
