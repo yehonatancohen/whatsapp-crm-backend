@@ -164,14 +164,15 @@ router.get('/:accountId/:chatId/messages/:messageId/media', async (req: Request,
 });
 
 const sendSchema = z.object({
-  body: z.string().min(1)
+  body: z.string().min(1),
+  quotedMessageId: z.string().optional(),
 });
 
 // 3. Send message
 router.post('/:accountId/:chatId/send', validate(sendSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { accountId, chatId } = req.params;
-    const { body } = req.body;
+    const { body, quotedMessageId } = req.body;
 
     const manager = ClientManager.getInstance();
     const instance = manager.getInstanceById(accountId);
@@ -186,8 +187,22 @@ router.post('/:accountId/:chatId/send', validate(sendSchema), async (req: Reques
       return;
     }
 
-    const msg = await client.sendMessage(chatId, body);
-    
+    let sendOptions: Record<string, unknown> = {};
+    if (quotedMessageId) {
+      try {
+        const chat = await client.getChatById(chatId);
+        const recentMsgs = await chat.fetchMessages({ limit: 200 });
+        const quotedMsg = recentMsgs.find(m => m.id._serialized === quotedMessageId);
+        if (quotedMsg) {
+          sendOptions = { quotedMessageId: quotedMsg };
+        }
+      } catch {
+        // ignore — send without quote if lookup fails
+      }
+    }
+
+    const msg = await client.sendMessage(chatId, body, sendOptions);
+
     res.json({
       id: msg.id._serialized,
       body: msg.body,
@@ -196,6 +211,75 @@ router.post('/:accountId/:chatId/send', validate(sendSchema), async (req: Reques
       type: msg.type,
       ack: msg.ack
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// 3b. Mark chat as seen
+router.post('/:accountId/:chatId/seen', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { accountId, chatId } = req.params;
+
+    const manager = ClientManager.getInstance();
+    const instance = manager.getInstanceById(accountId);
+    if (!instance || instance.status !== 'AUTHENTICATED') {
+      res.status(400).json({ error: 'Account not authenticated' });
+      return;
+    }
+
+    const client = instance.getClient();
+    if (!client) {
+      res.status(400).json({ error: 'WhatsApp client not ready' });
+      return;
+    }
+
+    const chat = await client.getChatById(chatId);
+    if (!chat) {
+      res.status(404).json({ error: 'Chat not found' });
+      return;
+    }
+
+    await chat.sendSeen();
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// 3c. Delete a message (for everyone)
+router.delete('/:accountId/:chatId/messages/:messageId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { accountId, chatId, messageId } = req.params;
+
+    const manager = ClientManager.getInstance();
+    const instance = manager.getInstanceById(accountId);
+    if (!instance || instance.status !== 'AUTHENTICATED') {
+      res.status(400).json({ error: 'Account not authenticated' });
+      return;
+    }
+
+    const client = instance.getClient();
+    if (!client) {
+      res.status(400).json({ error: 'WhatsApp client not ready' });
+      return;
+    }
+
+    const chat = await client.getChatById(chatId);
+    if (!chat) {
+      res.status(404).json({ error: 'Chat not found' });
+      return;
+    }
+
+    const messages = await chat.fetchMessages({ limit: 200 });
+    const msg = messages.find(m => m.id._serialized === messageId);
+    if (!msg) {
+      res.status(404).json({ error: 'Message not found' });
+      return;
+    }
+
+    await msg.delete(true);
+    res.json({ success: true });
   } catch (err) {
     next(err);
   }
