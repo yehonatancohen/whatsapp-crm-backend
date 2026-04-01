@@ -13,6 +13,7 @@ import {
   pauseCampaign,
   resumeCampaign,
   cancelCampaign,
+  restartCampaign,
   getCampaignProgress,
   getCampaignFailures,
 } from './services/campaignService';
@@ -174,6 +175,16 @@ router.post('/:id/resume', async (req: Request, res: Response, next: NextFunctio
 router.post('/:id/cancel', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const campaign = await cancelCampaign(req.params.id, req.user!.userId, req.user!.role);
+    res.json(campaign);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/campaigns/:id/restart
+router.post('/:id/restart', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const campaign = await restartCampaign(req.params.id, req.user!.userId, req.user!.role);
     res.json(campaign);
   } catch (err) {
     next(err);

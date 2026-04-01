@@ -408,6 +408,48 @@ export async function cancelCampaign(campaignId: string, userId: string, role: s
   return updated;
 }
 
+/** Restart a completed/cancelled/failed campaign from the beginning. */
+export async function restartCampaign(campaignId: string, userId: string, role: string) {
+  const campaign = await getOwnedCampaign(campaignId, userId, role);
+
+  const restartableStatuses: CampaignStatus[] = ['COMPLETED', 'CANCELLED', 'FAILED'];
+  if (!restartableStatuses.includes(campaign.status)) {
+    throw new ConflictError('Only COMPLETED, CANCELLED, or FAILED campaigns can be restarted');
+  }
+
+  // Delete all existing messages so they are recreated fresh
+  await prisma.campaignMessage.deleteMany({ where: { campaignId } });
+
+  // Reset campaign counters and status back to DRAFT
+  const updated = await prisma.campaign.update({
+    where: { id: campaignId },
+    data: {
+      status: 'DRAFT',
+      sentCount: 0,
+      failedCount: 0,
+      totalMessages: 0,
+      startedAt: null,
+      completedAt: null,
+    },
+  });
+
+  await prisma.activityLog.create({
+    data: {
+      type: 'CAMPAIGN_CREATED',
+      message: `Campaign "${campaign.name}" restarted`,
+      userId: campaign.userId,
+    },
+  });
+
+  emitToUser(campaign.userId, 'campaign:status', {
+    campaignId,
+    status: 'DRAFT',
+  });
+
+  logger.info({ campaignId }, 'Campaign restarted');
+  return updated;
+}
+
 /** Get failed messages for a campaign with their error reasons. */
 export async function getCampaignFailures(
   campaignId: string,
