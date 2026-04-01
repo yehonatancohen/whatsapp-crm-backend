@@ -8,36 +8,31 @@ const redis = redisInstance as any;
 
 /**
  * Determine the current HH:mm and day-of-week in the given timezone.
+ * Uses en-CA locale for a stable YYYY-MM-DD date string, avoids parsing
+ * weekday abbreviations which can vary by Node/ICU version.
  */
 function getNowInTimezone(tz: string): { hhmm: string; dayOfWeek: number; dateKey: string } {
   const now = new Date();
-  const formatter = new Intl.DateTimeFormat('en-US', {
+
+  // en-CA reliably produces YYYY-MM-DD
+  const dateKey = now.toLocaleDateString('en-CA', { timeZone: tz });
+
+  // Get HH:mm in the target timezone
+  const timeStr = now.toLocaleTimeString('en-US', {
     timeZone: tz,
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
-    weekday: 'short',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
   });
-  const parts = formatter.formatToParts(now);
-  const get = (type: string) => parts.find((p) => p.type === type)?.value || '';
+  const [rawHh, mm] = timeStr.split(':');
+  const hhmm = `${rawHh === '24' ? '00' : rawHh}:${mm}`;
 
-  const hh = get('hour').padStart(2, '0');
-  // Handle case where some environments return '24' for midnight
-  const normalizedHh = hh === '24' ? '00' : hh;
-  const mm = get('minute').padStart(2, '0');
-  const hhmm = `${normalizedHh}:${mm}`;
-
-  // Map JS Date day to 0=Sunday..6=Saturday
-  const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-  const dayOfWeek = dayMap[get('weekday')] ?? now.getDay();
-
-  const dateKey = `${get('year')}-${get('month')}-${get('day')}`;
+  // Derive day-of-week from UTC noon on that calendar date to avoid DST edge cases
+  const [year, month, day] = dateKey.split('-').map(Number);
+  const dayOfWeek = new Date(Date.UTC(year, month - 1, day, 12)).getUTCDay(); // 0=Sun … 6=Sat
 
   const result = { hhmm, dayOfWeek, dateKey };
-  logger.info({ tz, ...result, localTime: now.toISOString() }, 'Calculated time in timezone');
+  logger.info({ tz, ...result, utc: now.toISOString() }, 'Calculated time in timezone');
   return result;
 }
 
