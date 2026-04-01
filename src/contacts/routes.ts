@@ -69,7 +69,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const search = (req.query.search as string) || undefined;
     const tags = req.query.tags ? (req.query.tags as string).split(',') : undefined;
 
-    const result = await listContacts({ page, limit, search, tags, userId: req.user!.userId, isAdmin: req.user!.role === 'ADMIN' });
+    const result = await listContacts({ page, limit, search, tags, userId: req.user!.userId, isAdmin: false });
     res.json(result);
   } catch (err) {
     next(err);

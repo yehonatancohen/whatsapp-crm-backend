@@ -6,15 +6,13 @@ const router = Router();
 
 router.use(authenticate);
 
-// GET /api/activity — recent activity for the user (admin: all)
+// GET /api/activity — recent activity for the user
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 50, 200);
     const type = req.query.type as string | undefined;
-    const isAdmin = req.user!.role === 'ADMIN';
 
-    const where: any = {};
-    if (!isAdmin) where.userId = req.user!.userId;
+    const where: any = { userId: req.user!.userId };
     if (type) where.type = type;
 
     const logs = await prisma.activityLog.findMany({
@@ -40,8 +38,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 // GET /api/activity/stats — dashboard stats
 router.get('/stats', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isAdmin = req.user!.role === 'ADMIN';
-    const userFilter = isAdmin ? {} : { userId: req.user!.userId };
+    const userFilter = { userId: req.user!.userId };
 
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -57,15 +54,13 @@ router.get('/stats', async (req: Request, res: Response, next: NextFunction) => 
     ] = await Promise.all([
       prisma.account.count({ where: userFilter }),
       prisma.account.count({ where: { ...userFilter, status: 'AUTHENTICATED' } }),
-      isAdmin
-        ? prisma.contact.count()
-        : prisma.contact.count({
-            where: {
-              listEntries: {
-                some: { contactList: { userId: req.user!.userId } },
-              },
-            },
-          }),
+      prisma.contact.count({
+        where: {
+          listEntries: {
+            some: { contactList: { userId: req.user!.userId } },
+          },
+        },
+      }),
       prisma.campaign.count({ where: userFilter }),
       prisma.campaign.count({ where: { ...userFilter, status: { in: ['RUNNING', 'SCHEDULED'] } } }),
       prisma.campaignMessage.count({

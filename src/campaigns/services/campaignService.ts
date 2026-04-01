@@ -44,11 +44,11 @@ export interface CampaignProgress {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Verify campaign exists and belongs to user (unless admin). Returns the campaign. */
-async function getOwnedCampaign(campaignId: string, userId: string, role: string) {
+/** Verify campaign exists and belongs to user. Returns the campaign. */
+async function getOwnedCampaign(campaignId: string, userId: string, _role: string) {
   const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
   if (!campaign) throw new NotFoundError('Campaign');
-  if (role !== 'ADMIN' && campaign.userId !== userId) {
+  if (campaign.userId !== userId) {
     throw new ForbiddenError('You do not own this campaign');
   }
   return campaign;
@@ -132,12 +132,8 @@ export async function getCampaign(campaignId: string, userId: string, role: stri
 }
 
 /** List campaigns for a user, optionally filtered by status. */
-export async function listCampaigns(userId: string, role: string, status?: CampaignStatus) {
-  const where: Record<string, unknown> = {};
-
-  if (role !== 'ADMIN') {
-    where.userId = userId;
-  }
+export async function listCampaigns(userId: string, _role: string, status?: CampaignStatus) {
+  const where: Record<string, unknown> = { userId };
 
   if (status) {
     where.status = status;

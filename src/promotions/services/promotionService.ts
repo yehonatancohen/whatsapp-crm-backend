@@ -32,7 +32,7 @@ async function getOwned(promotionId: string, userId: string, role: string) {
     include: { messages: true, groups: true },
   });
   if (!promotion) throw Object.assign(new Error('Promotion not found'), { status: 404 });
-  if (role !== 'ADMIN' && promotion.userId !== userId) {
+  if (promotion.userId !== userId) {
     throw Object.assign(new Error('Not authorized'), { status: 403 });
   }
   return promotion;
@@ -82,9 +82,9 @@ export async function createPromotion(userId: string, data: CreatePromotionData)
   });
 }
 
-export async function listPromotions(userId: string, role: string) {
+export async function listPromotions(userId: string, _role: string) {
   return prisma.groupPromotion.findMany({
-    where: role === 'ADMIN' ? {} : { userId },
+    where: { userId },
     include: {
       messages: true,
       groups: true,
@@ -155,7 +155,7 @@ export async function updateMessage(
     include: { promotion: { select: { userId: true } } },
   });
   if (!msg) throw Object.assign(new Error('Message not found'), { status: 404 });
-  if (role !== 'ADMIN' && msg.promotion.userId !== userId) {
+  if (msg.promotion.userId !== userId) {
     throw Object.assign(new Error('Not authorized'), { status: 403 });
   }
   return prisma.groupPromotionMessage.update({ where: { id: messageId }, data });
@@ -167,7 +167,7 @@ export async function removeMessage(messageId: string, userId: string, role: str
     include: { promotion: { select: { userId: true } } },
   });
   if (!msg) throw Object.assign(new Error('Message not found'), { status: 404 });
-  if (role !== 'ADMIN' && msg.promotion.userId !== userId) {
+  if (msg.promotion.userId !== userId) {
     throw Object.assign(new Error('Not authorized'), { status: 403 });
   }
   await prisma.groupPromotionMessage.delete({ where: { id: messageId } });

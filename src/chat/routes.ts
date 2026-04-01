@@ -13,7 +13,7 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
   try {
     const manager = ClientManager.getInstance();
     // Get all accounts for user to check ownership
-    const accounts = await manager.getAllAccounts(req.user!.userId, req.user!.role === 'ADMIN');
+    const accounts = await manager.getAllAccounts(req.user!.userId, false);
     
     // For each authenticated account, fetch chats
     const allChats = [];

@@ -58,11 +58,11 @@ function getDaysAtLevel(warmupStartedAt: Date | null): number {
   return Math.floor(diffMs / (24 * 60 * 60 * 1000));
 }
 
-/** Verify account exists and belongs to the user (unless admin). */
-async function getOwnedAccount(accountId: string, userId: string, role: string) {
+/** Verify account exists and belongs to the user. */
+async function getOwnedAccount(accountId: string, userId: string, _role: string) {
   const account = await prisma.account.findUnique({ where: { id: accountId } });
   if (!account) throw new NotFoundError('Account');
-  if (role !== 'ADMIN' && account.userId !== userId) {
+  if (account.userId !== userId) {
     throw new ForbiddenError('You do not own this account');
   }
   return account;
@@ -277,9 +277,7 @@ export async function startBanRecovery(
 
 /** Get warmup overview for all accounts belonging to a user (shows all authenticated, not just enabled). */
 export async function getWarmupOverview(userId: string, role: string): Promise<WarmupOverviewResponse> {
-  const where = role === 'ADMIN'
-    ? { status: 'AUTHENTICATED' as const }
-    : { userId, status: 'AUTHENTICATED' as const };
+  const where = { userId, status: 'AUTHENTICATED' as const };
 
   const accounts = await prisma.account.findMany({
     where,

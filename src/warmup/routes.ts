@@ -27,11 +27,11 @@ const intensitySchema = z.object({
   intensity: z.enum(['GHOST', 'LOW', 'NORMAL', 'HIGH']),
 });
 
-/** Verify the account belongs to the requesting user (unless admin). */
-async function verifyOwnership(accountId: string, userId: string, role: string): Promise<void> {
+/** Verify the account belongs to the requesting user. */
+async function verifyOwnership(accountId: string, userId: string, _role: string): Promise<void> {
   const account = await prisma.account.findUnique({ where: { id: accountId } });
   if (!account) throw new NotFoundError('Account');
-  if (role !== 'ADMIN' && account.userId !== userId) {
+  if (account.userId !== userId) {
     throw new ForbiddenError('You do not own this account');
   }
 }

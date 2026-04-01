@@ -36,8 +36,7 @@ const updateAccountSchema = z.object({
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const manager = ClientManager.getInstance();
-    const isAdmin = req.user!.role === 'ADMIN';
-    const accounts = await manager.getAllAccounts(req.user!.userId, isAdmin);
+    const accounts = await manager.getAllAccounts(req.user!.userId, false);
     res.json(accounts);
   } catch (err) {
     next(err);
@@ -48,11 +47,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const manager = ClientManager.getInstance();
-    const isAdmin = req.user!.role === 'ADMIN';
-    const account = await manager.getAccount(
-      req.params.id,
-      isAdmin ? undefined : req.user!.userId,
-    );
+    const account = await manager.getAccount(req.params.id, req.user!.userId);
     if (!account) throw new NotFoundError('Account');
     res.json(account);
   } catch (err) {
@@ -64,10 +59,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 router.get('/:id/qr', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const manager = ClientManager.getInstance();
-    const isAdmin = req.user!.role === 'ADMIN';
-    const account = await manager.getAccount(
-      req.params.id,
-      isAdmin ? undefined : req.user!.userId,
+    const account = await manager.getAccount(req.params.id, req.user!.userId);
     );
     if (!account) throw new NotFoundError('Account');
 
@@ -86,11 +78,7 @@ router.get('/:id/qr', async (req: Request, res: Response, next: NextFunction) =>
 router.get('/:id/groups', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const manager = ClientManager.getInstance();
-    const isAdmin = req.user!.role === 'ADMIN';
-    const account = await manager.getAccount(
-      req.params.id,
-      isAdmin ? undefined : req.user!.userId,
-    );
+    const account = await manager.getAccount(req.params.id, req.user!.userId);
     if (!account) throw new NotFoundError('Account');
 
     const instance = manager.getInstanceById(req.params.id);
@@ -151,11 +139,7 @@ router.patch(
 router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const manager = ClientManager.getInstance();
-    const isAdmin = req.user!.role === 'ADMIN';
-    const removed = await manager.removeAccount(
-      req.params.id,
-      isAdmin ? undefined : req.user!.userId,
-    );
+    const removed = await manager.removeAccount(req.params.id, req.user!.userId);
     if (!removed) throw new NotFoundError('Account');
     res.status(204).end();
   } catch (err) {
@@ -196,11 +180,7 @@ const updateProfileSchema = z.object({
 /** Helper: get an authenticated client for the given account, with ownership check. */
 async function getAuthenticatedClient(req: Request) {
   const manager = ClientManager.getInstance();
-  const isAdmin = req.user!.role === 'ADMIN';
-  const account = await manager.getAccount(
-    req.params.id,
-    isAdmin ? undefined : req.user!.userId,
-  );
+  const account = await manager.getAccount(req.params.id, req.user!.userId);
   if (!account) throw new NotFoundError('Account');
 
   const instance = manager.getInstanceById(req.params.id);
