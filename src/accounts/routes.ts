@@ -60,7 +60,6 @@ router.get('/:id/qr', async (req: Request, res: Response, next: NextFunction) =>
   try {
     const manager = ClientManager.getInstance();
     const account = await manager.getAccount(req.params.id, req.user!.userId);
-    );
     if (!account) throw new NotFoundError('Account');
 
     if (!account.qrCode) {
