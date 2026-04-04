@@ -184,8 +184,11 @@ router.post('/:id/pairing-code', async (req: Request, res: Response, next: NextF
       return;
     }
 
-    // Strip non-digits (e.g. leading +)
-    const digits = phoneNumber.replace(/\D/g, '');
+    // Strip non-digits (e.g. leading +), then normalize Israeli local format (05X → 9725X)
+    let digits = phoneNumber.replace(/\D/g, '');
+    if (digits.startsWith('0')) {
+      digits = '972' + digits.slice(1);
+    }
     const code = await (client as any).requestPairingCode(digits);
     res.json({ code });
   } catch (err) {
