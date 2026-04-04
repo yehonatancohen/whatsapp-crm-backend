@@ -189,6 +189,16 @@ router.post('/:id/pairing-code', async (req: Request, res: Response, next: NextF
     if (digits.startsWith('0')) {
       digits = '972' + digits.slice(1);
     }
+
+    // requestPairingCode internally calls window.onCodeReceivedEvent() in the browser page.
+    // That function is only registered when the client was initialized with pairWithPhoneNumber.
+    // Since we initialize in QR mode, we must expose it manually before calling requestPairingCode.
+    const pupPage = (client as any).pupPage;
+    const alreadyExposed = await pupPage.evaluate(() => typeof (globalThis as any).onCodeReceivedEvent === 'function');
+    if (!alreadyExposed) {
+      await pupPage.exposeFunction('onCodeReceivedEvent', (code: string) => code);
+    }
+
     const code = await (client as any).requestPairingCode(digits);
     res.json({ code });
   } catch (err) {
