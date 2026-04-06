@@ -22,6 +22,7 @@ export interface CreateCampaignData {
   dailyLimitPerAccount?: number;
   groupJids?: { jid: string; name?: string }[];
   accountIds: string[];
+  variants?: { name: string; messageTemplate: string; weight: number }[];
 }
 
 export interface UpdateCampaignData {
@@ -97,6 +98,18 @@ export async function createCampaign(
     });
   }
 
+  // Create A/B variants if provided
+  if (data.variants && data.variants.length > 0) {
+    await prisma.campaignVariant.createMany({
+      data: data.variants.map((v) => ({
+        campaignId: campaign.id,
+        name: v.name,
+        messageTemplate: v.messageTemplate,
+        weight: v.weight,
+      })),
+    });
+  }
+
   await prisma.activityLog.create({
     data: {
       type: 'CAMPAIGN_CREATED',
@@ -144,6 +157,7 @@ export async function listCampaigns(userId: string, _role: string, status?: Camp
     orderBy: { createdAt: 'desc' },
     include: {
       contactList: { select: { id: true, name: true } },
+      variants: { select: { id: true, name: true, weight: true, sentCount: true, deliveredCount: true, failedCount: true, replyCount: true } },
       _count: { select: { messages: true } },
     },
   });

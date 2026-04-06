@@ -111,6 +111,23 @@ enum ActivityType {
   SUBSCRIPTION_CREATED
   SUBSCRIPTION_UPDATED
   SUBSCRIPTION_CANCELED
+  AUTO_REPLY_TRIGGERED
+  SCHEDULED_MESSAGE_SENT
+  TEMPLATE_CREATED
+}
+
+enum AutoReplyMatchType {
+  EXACT
+  CONTAINS
+  STARTS_WITH
+  REGEX
+}
+
+enum ScheduledMessageStatus {
+  PENDING
+  SENT
+  FAILED
+  CANCELLED
 }
 
 // ─── Models ──────────────────────────────────────────────────────
@@ -130,14 +147,17 @@ model User {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  accounts         Account[]
-  contactLists     ContactList[]
-  groupCollections GroupCollection[]
-  campaigns        Campaign[]
-  promotions       GroupPromotion[]
-  activityLogs     ActivityLog[]
-  refreshTokens    RefreshToken[]
-  subscription     Subscription?
+  accounts          Account[]
+  contactLists      ContactList[]
+  groupCollections  GroupCollection[]
+  campaigns         Campaign[]
+  promotions        GroupPromotion[]
+  activityLogs      ActivityLog[]
+  refreshTokens     RefreshToken[]
+  subscription      Subscription?
+  messageTemplates  MessageTemplate[]
+  autoReplies       AutoReply[]
+  scheduledMessages ScheduledMessage[]
 }
 
 model RefreshToken {
@@ -165,10 +185,11 @@ model Account {
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
-  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  warmupLogs       WarmupLog[]
-  activityLogs     ActivityLog[]
-  campaignMessages CampaignMessage[]
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  warmupLogs        WarmupLog[]
+  activityLogs      ActivityLog[]
+  campaignMessages  CampaignMessage[]
+  scheduledMessages ScheduledMessage[]
 
   @@unique([userId, label])
   @@index([userId])
@@ -254,6 +275,7 @@ model Campaign {
   contactList ContactList?      @relation(fields: [contactListId], references: [id], onDelete: SetNull)
   messages    CampaignMessage[]
   groups      CampaignGroup[]
+  variants    CampaignVariant[]
 
   @@index([userId])
   @@index([status])
@@ -282,15 +304,18 @@ model CampaignMessage {
   contactId    String?
   accountId    String?
   groupJid     String?
+  variantId    String?
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
-  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  contact  Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  account  Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  campaign Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact  Contact?         @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  account  Account?         @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  variant  CampaignVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
 
   @@index([campaignId, status])
   @@index([accountId])
+  @@index([variantId])
 }
 
 model WarmupLog {
@@ -440,4 +465,91 @@ model GroupPromotionLog {
   @@index([promotionId, createdAt])
   @@index([accountId, createdAt])
   @@index([status])
+}
+
+// ─── Message Templates ──────────────────────────────────────────────
+
+model MessageTemplate {
+  id          String   @id @default(cuid())
+  name        String
+  content     String
+  category    String?
+  variables   String[] @default([])
+  userId      String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, name])
+  @@index([userId])
+  @@index([category])
+}
+
+// ─── Auto-Reply Rules ───────────────────────────────────────────────
+
+model AutoReply {
+  id           String             @id @default(cuid())
+  name         String
+  isActive     Boolean            @default(true)
+  matchType    AutoReplyMatchType @default(CONTAINS)
+  matchValue   String
+  replyMessage String
+  accountIds   String[]           @default([])
+  onlyPrivate  Boolean            @default(true)
+  cooldownSec  Int                @default(60)
+  triggerCount Int                @default(0)
+  userId       String
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isActive])
+}
+
+// ─── Scheduled Messages ─────────────────────────────────────────────
+
+model ScheduledMessage {
+  id          String                 @id @default(cuid())
+  chatId      String
+  chatName    String?
+  body        String
+  scheduledAt DateTime
+  status      ScheduledMessageStatus @default(PENDING)
+  errorMessage String?
+  sentAt      DateTime?
+  accountId   String
+  userId      String
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([accountId])
+  @@index([status, scheduledAt])
+}
+
+// ─── Campaign Variants (A/B Testing) ────────────────────────────────
+
+model CampaignVariant {
+  id              String   @id @default(cuid())
+  name            String
+  messageTemplate String
+  weight          Int      @default(50)
+  sentCount       Int      @default(0)
+  deliveredCount  Int      @default(0)
+  failedCount     Int      @default(0)
+  replyCount      Int      @default(0)
+  campaignId      String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  campaign Campaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  messages CampaignMessage[]
+
+  @@index([campaignId])
 }

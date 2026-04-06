@@ -27,6 +27,10 @@ import promotionsRouter from './promotions/routes';
 import groupCollectionsRouter from './group-collections/routes';
 import subscriptionsRouter from './subscriptions/routes';
 import linkPreviewRouter from './shared/routes/linkPreview';
+import templatesRouter from './templates/routes';
+import autoRepliesRouter from './auto-replies/routes';
+import scheduledMessagesRouter from './scheduled-messages/routes';
+import analyticsRouter from './analytics/routes';
 // import stripeWebhookRouter from './subscriptions/webhookRoute';
 
 // Services
@@ -37,6 +41,8 @@ import { campaignSchedulerQueue } from './campaigns/campaignQueue';
 import { createPromotionProcessorWorker } from './promotions/services/promotionWorker';
 import { createPromotionSchedulerWorker } from './promotions/services/promotionScheduler';
 import { promotionSchedulerQueue } from './promotions/promotionQueue';
+import { createScheduledMessageWorker } from './scheduled-messages/services/scheduledMessageWorker';
+import { scheduledMessageSchedulerQueue } from './scheduled-messages/scheduledMessageQueue';
 
 // Validate environment variables
 validateEnv();
@@ -106,6 +112,10 @@ app.use('/api/campaigns', authenticate, requireVerified, requireActiveSubscripti
 app.use('/api/chat', authenticate, requireVerified, requireActiveSubscription, chatRouter);
 app.use('/api/promotions', authenticate, requireVerified, requireActiveSubscription, promotionsRouter);
 app.use('/api/group-collections', authenticate, requireVerified, requireActiveSubscription, groupCollectionsRouter);
+app.use('/api/templates', authenticate, requireVerified, requireActiveSubscription, templatesRouter);
+app.use('/api/auto-replies', authenticate, requireVerified, requireActiveSubscription, autoRepliesRouter);
+app.use('/api/scheduled-messages', authenticate, requireVerified, requireActiveSubscription, scheduledMessagesRouter);
+app.use('/api/analytics', authenticate, requireVerified, requireActiveSubscription, analyticsRouter);
 app.use('/api/utils', authenticate, linkPreviewRouter);
 
 // Health check
@@ -178,6 +188,15 @@ async function start() {
   );
   logger.info('Promotion workers registered');
 
+  // Start scheduled message worker (checks every 30s for due messages)
+  const scheduledMessageWorker = createScheduledMessageWorker();
+  await scheduledMessageSchedulerQueue.upsertJobScheduler(
+    'scheduled-message-scheduler-repeat',
+    { every: 30_000 },
+    { name: 'scheduled-message-tick' },
+  );
+  logger.info('Scheduled message worker registered');
+
   httpServer.listen(config.port, () => {
     logger.info(`Backend running on http://localhost:${config.port}`);
   });
@@ -190,6 +209,7 @@ async function start() {
     await campaignScheduler.close();
     await promotionProcessor.close();
     await promotionScheduler.close();
+    await scheduledMessageWorker.close();
 
     // Destroy all WhatsApp instances so sessions persist across restarts
     const allInstances = manager.getAllInstances();

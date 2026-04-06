@@ -6,6 +6,7 @@ import { prisma } from '../../shared/db';
 import { emitToUser, emitToAdmins } from '../../shared/socket';
 import { logger } from '../../shared/logger';
 import { ConflictError, NotFoundError } from '../../shared/errors';
+import { processIncomingMessage } from '../../auto-replies/services/autoReplyService';
 
 // Map our status strings to Prisma enum
 const statusToPrisma: Record<AccountStatusType, PrismaAccountStatus> = {
@@ -63,7 +64,7 @@ export class ClientManager {
       onQr: (id, qrCode) => emitToUser(userId, 'account:qr', { id, qrCode }),
       onAuthenticated: (id, phoneNumber, pushName) =>
         this.handleAuthenticated(id, userId, phoneNumber, pushName),
-      onMessage: (msg) => emitToUser(userId, 'chat:message', msg),
+      onMessage: (msg) => this.handleIncomingMessage(userId, msg),
     };
 
     // Create and start the WhatsApp instance
@@ -145,7 +146,7 @@ export class ClientManager {
         onQr: (id, qrCode) => emitToUser(userId, 'account:qr', { id, qrCode }),
         onAuthenticated: (id, phoneNumber, pushName) =>
           this.handleAuthenticated(id, userId, phoneNumber, pushName),
-        onMessage: (msg) => emitToUser(userId, 'chat:message', msg),
+        onMessage: (msg) => this.handleIncomingMessage(userId, msg),
       };
 
       const newInstance = new WhatsAppInstance(
@@ -162,6 +163,26 @@ export class ClientManager {
     }
 
     return this.getAccount(accountId, userId);
+  }
+
+  private handleIncomingMessage(userId: string, msg: ChatMessageEvent): void {
+    emitToUser(userId, 'chat:message', msg);
+
+    // Process auto-reply for incoming messages (not from me)
+    if (!msg.fromMe && msg.body) {
+      processIncomingMessage(userId, msg.accountId, msg.chatId, msg.body, msg.isGroup)
+        .then((reply) => {
+          if (!reply) return;
+          const instance = this.getInstanceById(msg.accountId);
+          if (!instance || instance.status !== 'AUTHENTICATED') return;
+          const client = instance.getClient();
+          if (!client) return;
+          return client.sendMessage(msg.chatId, reply);
+        })
+        .catch((err) => {
+          logger.debug({ accountId: msg.accountId, err }, 'Auto-reply error');
+        });
+    }
   }
 
   private async handleStatusChange(
@@ -365,7 +386,7 @@ export class ClientManager {
       onQr: (id, qrCode) => emitToUser(userId, 'account:qr', { id, qrCode }),
       onAuthenticated: (id, phoneNumber, pushName) =>
         this.handleAuthenticated(id, userId, phoneNumber, pushName),
-      onMessage: (msg) => emitToUser(userId, 'chat:message', msg),
+      onMessage: (msg) => this.handleIncomingMessage(userId, msg),
     };
 
     const instance = new WhatsAppInstance(accountId, account.label, account.proxy || undefined, eventHandlers);
@@ -397,7 +418,7 @@ export class ClientManager {
         onQr: (id, qrCode) => emitToUser(userId, 'account:qr', { id, qrCode }),
         onAuthenticated: (id, phoneNumber, pushName) =>
           this.handleAuthenticated(id, userId, phoneNumber, pushName),
-        onMessage: (msg) => emitToUser(userId, 'chat:message', msg),
+        onMessage: (msg) => this.handleIncomingMessage(userId, msg),
       };
 
       const instance = new WhatsAppInstance(account.id, account.label, account.proxy || undefined, eventHandlers);

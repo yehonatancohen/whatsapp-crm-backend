@@ -37,6 +37,11 @@ const createSchema = z.object({
     jid: z.string(),
     name: z.string().optional(),
   })).optional(),
+  variants: z.array(z.object({
+    name: z.string().min(1).max(100),
+    messageTemplate: z.string().min(1).max(5000),
+    weight: z.number().int().min(1).max(100),
+  })).optional(),
 });
 
 const updateSchema = z.object({
