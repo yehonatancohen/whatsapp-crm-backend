@@ -208,10 +208,14 @@ export async function getPromotionLogs(
   offset = 0,
 ) {
   await getOwned(promotionId, userId, role);
-  return prisma.groupPromotionLog.findMany({
-    where: { promotionId },
-    orderBy: { createdAt: 'desc' },
-    take: limit,
-    skip: offset,
-  });
+  const [logs, total] = await prisma.$transaction([
+    prisma.groupPromotionLog.findMany({
+      where: { promotionId },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.groupPromotionLog.count({ where: { promotionId } }),
+  ]);
+  return { logs, total };
 }

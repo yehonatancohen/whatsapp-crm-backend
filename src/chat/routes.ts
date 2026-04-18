@@ -551,4 +551,39 @@ router.patch('/:accountId/:chatId/group-settings', validate(groupSettingsSchema)
   } catch (err) { next(err); }
 });
 
+// 10. Get group invite link (admin only)
+router.get('/:accountId/:chatId/invite-link', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { accountId, chatId } = req.params;
+
+    const manager = ClientManager.getInstance();
+    const instance = manager.getInstanceById(accountId);
+    if (!instance || instance.status !== 'AUTHENTICATED') {
+      res.status(400).json({ error: 'Account not authenticated' });
+      return;
+    }
+    const client = instance.getClient();
+    if (!client) {
+      res.status(400).json({ error: 'WhatsApp client not ready' });
+      return;
+    }
+
+    const chat = await client.getChatById(chatId);
+    if (!chat || !chat.isGroup) {
+      res.status(400).json({ error: 'Not a group chat' });
+      return;
+    }
+
+    const groupChat = chat as any;
+    try {
+      const inviteCode = await groupChat.getInviteCode();
+      res.json({ inviteLink: `https://chat.whatsapp.com/${inviteCode}` });
+    } catch {
+      res.status(502).json({ error: 'Failed to get invite link. You may need to be a group admin.' });
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;
