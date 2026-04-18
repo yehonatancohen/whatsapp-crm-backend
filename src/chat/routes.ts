@@ -187,14 +187,14 @@ router.post('/:accountId/:chatId/send', validate(sendSchema), async (req: Reques
       return;
     }
 
-    let sendOptions: Record<string, unknown> = {};
+    let sendOptions: Record<string, unknown> = { linkPreview: true };
     if (quotedMessageId) {
       try {
         const chat = await client.getChatById(chatId);
         const recentMsgs = await chat.fetchMessages({ limit: 200 });
         const quotedMsg = recentMsgs.find(m => m.id._serialized === quotedMessageId);
         if (quotedMsg) {
-          sendOptions = { quotedMessageId: quotedMsg };
+          sendOptions = { ...sendOptions, quotedMessageId: quotedMsg };
         }
       } catch {
         // ignore — send without quote if lookup fails
