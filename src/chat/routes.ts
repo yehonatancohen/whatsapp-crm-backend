@@ -83,7 +83,24 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
     }
 
     const messages = await chat.fetchMessages({ limit });
-    
+
+    // Resolve contact names for unique authors (group chats)
+    const authorIds = [...new Set(
+      messages.filter(m => m.author && !m.fromMe).map(m => m.author as string)
+    )].slice(0, 30);
+    const nameMap: Record<string, string | undefined> = {};
+    if (authorIds.length > 0) {
+      await Promise.allSettled(
+        authorIds.map(async (authorId) => {
+          try {
+            const contact = await client.getContactById(authorId);
+            const name = contact.name || contact.pushname;
+            if (name) nameMap[authorId] = name;
+          } catch { /* ignore */ }
+        }),
+      );
+    }
+
     res.json(messages.map(m => ({
       id: m.id._serialized,
       body: m.body,
@@ -92,6 +109,7 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
       type: m.type,
       ack: m.ack,
       author: m.author,
+      authorName: m.author ? nameMap[m.author as string] : undefined,
       hasMedia: m.hasMedia || false,
     })));
   } catch (err) {
