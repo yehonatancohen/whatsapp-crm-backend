@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
+import { MessageMedia } from 'whatsapp-web.js';
 import { authenticate } from '../shared/middleware/auth';
 import { validate } from '../shared/middleware/validate';
 import { ClientManager } from '../accounts/services/ClientManager';
@@ -599,6 +600,46 @@ router.get('/:accountId/:chatId/invite-link', async (req: Request, res: Response
     } catch {
       res.status(502).json({ error: 'Failed to get invite link. You may need to be a group admin.' });
     }
+  } catch (err) {
+    next(err);
+  }
+});
+
+// 11. Send voice message (PTT)
+const sendVoiceSchema = z.object({
+  data: z.string().min(1),     // base64 encoded audio
+  mimeType: z.string().min(1),
+});
+
+router.post('/:accountId/:chatId/send-voice', validate(sendVoiceSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { accountId, chatId } = req.params;
+    const { data, mimeType } = req.body;
+
+    const manager = ClientManager.getInstance();
+    const instance = manager.getInstanceById(accountId);
+    if (!instance || instance.status !== 'AUTHENTICATED') {
+      res.status(400).json({ error: 'Account not authenticated' });
+      return;
+    }
+    const client = instance.getClient();
+    if (!client) {
+      res.status(400).json({ error: 'WhatsApp client not ready' });
+      return;
+    }
+
+    const media = new MessageMedia(mimeType, data, 'voice.ogg');
+    const msg = await client.sendMessage(chatId, media, { sendAudioAsVoice: true } as any);
+
+    res.json({
+      id: msg.id._serialized,
+      body: msg.body || '',
+      fromMe: msg.fromMe,
+      timestamp: msg.timestamp,
+      type: 'ptt',
+      ack: msg.ack,
+      hasMedia: true,
+    });
   } catch (err) {
     next(err);
   }
