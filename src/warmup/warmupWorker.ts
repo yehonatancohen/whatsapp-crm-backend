@@ -10,22 +10,22 @@ import { checkLevelUp, getAccountProgress } from './warmupService';
 import { warmupCycleQueue } from './warmupQueue';
 import { resolveSpintax } from './spintax';
 import { simulateHumanSend } from './humanDelay';
+import {
+  getDailyProfile,
+  isInsideActiveHours,
+  isInsideBurst,
+  targetMessagesByNow,
+  burstIntervalMs,
+} from './activityWindow';
+import { generateWarmupMessage } from './messageGenerator';
+import { buildOwnVCard } from './vcard';
 
 // BullMQ bundles its own ioredis types — cast to avoid duplicate-type mismatches.
 const redis = redisInstance as any;
 
 // ─── Message templates ──────────────────────────────────────────────────────
 
-const MESSAGE_TEMPLATES = [
-  "{Hey|Hi|{Yo|Sup}} {bro|man|dude}, {what's up?|how are you?|how's it going?}",
-  "Just checking in, {everything good?|all good?|how have you been?}",
-  "{Good morning|Morning}, {hope you have a good one|have a great day}!",
-  "{Yo|Hey}, let me know when you're {free|around} to chat.",
-  "{What's good|What's up}? {Haven't heard from you|Been a while}!",
-  "{Hope you're doing well|Hope all is well}! {Talk soon|Catch up soon}.",
-  "{Hey there|Hi there}, {just wanted to say hi|thought I'd reach out}!",
-  "{Happy {Monday|Tuesday|Wednesday|Thursday|Friday}}! {Have a great one|Enjoy your day}.",
-];
+// Message templates moved to messageGenerator.ts (length-bucketed + entropy layers).
 
 const STATUS_MESSAGES = [
   "Living life one day at a time",
@@ -85,10 +85,30 @@ export function createSchedulerWorker(): Worker {
           continue;
         }
 
+        // Activity window gate: skip if outside active hours or not inside a burst.
+        const nowDate = new Date(now);
+        const profile = getDailyProfile(account.phoneNumber, nowDate);
+        if (!isInsideActiveHours(profile, nowDate)) {
+          continue;
+        }
+        if (isInsideBurst(profile, nowDate) === null) {
+          continue;
+        }
+
+        // Burst-quota gate: don't spend more than today's cumulative burst target.
+        const target = targetMessagesByNow(profile, levelConfig.maxMessagesPerDay, nowDate);
+        if (progress.messagesSentToday >= target) {
+          continue;
+        }
+
+        // Inside a burst, use tighter intervals (human typing-session spacing)
+        // rather than the level's baseline intervals.
+        const { minMs: intervalMinMs, maxMs: intervalMaxMs } = burstIntervalMs();
+
         // Check if enough time has passed since last activity
         if (progress.lastMessageAt) {
           const elapsed = now - progress.lastMessageAt.getTime();
-          if (elapsed < levelConfig.intervalMinMs) {
+          if (elapsed < intervalMinMs) {
             continue;
           }
         }
@@ -97,9 +117,9 @@ export function createSchedulerWorker(): Worker {
         // This creates natural variance rather than firing exactly at intervalMin
         if (progress.lastMessageAt) {
           const elapsed = now - progress.lastMessageAt.getTime();
-          const intervalRange = levelConfig.intervalMaxMs - levelConfig.intervalMinMs;
+          const intervalRange = intervalMaxMs - intervalMinMs;
           const threshold = Math.random() * intervalRange;
-          if (elapsed - levelConfig.intervalMinMs < threshold) {
+          if (elapsed - intervalMinMs < threshold) {
             continue;
           }
         }
@@ -164,12 +184,18 @@ export function createCycleWorker(): Worker {
 
       const activityType = pickRandom(initiableActivities);
       let details: string | undefined;
+      // Some activities (vCard nudge, typo correction) send more than one
+      // WhatsApp message per cycle; count them all against the daily quota.
+      let messageCount = 1;
 
       try {
         switch (activityType) {
-          case WarmupActivityType.MESSAGE_SENT:
-            details = await executeMessageSent(accountId);
+          case WarmupActivityType.MESSAGE_SENT: {
+            const result = await executeMessageSent(accountId);
+            details = result.details;
+            messageCount = result.messageCount;
             break;
+          }
           case WarmupActivityType.PROFILE_UPDATE:
             details = await executeProfileUpdate(accountId);
             break;
@@ -197,8 +223,8 @@ export function createCycleWorker(): Worker {
       // Increment daily counter and update last message time
       await prisma.warmupProgress.update({
         where: { phoneNumber: account.phoneNumber },
-        data: { 
-          messagesSentToday: { increment: 1 },
+        data: {
+          messagesSentToday: { increment: messageCount },
           lastMessageAt: new Date()
         }
       });
@@ -245,13 +271,23 @@ export function createCycleWorker(): Worker {
 
 // ─── Activity Executors ─────────────────────────────────────────────────────
 
-async function executeMessageSent(accountId: string): Promise<string> {
+interface MessageSentResult {
+  details: string;
+  messageCount: number;
+}
+
+async function executeMessageSent(accountId: string): Promise<MessageSentResult> {
   const manager = ClientManager.getInstance();
   const senderInstance = manager.getInstanceById(accountId);
   if (!senderInstance) throw new Error(`No instance found for account ${accountId}`);
 
   const senderClient = senderInstance.getClient();
   if (!senderClient) throw new Error(`No client for account ${accountId}`);
+
+  const senderAccount = await prisma.account.findUnique({ where: { id: accountId } });
+  if (!senderAccount?.phoneNumber) {
+    throw new Error(`Sender account ${accountId} has no phone number`);
+  }
 
   // Pick a random authenticated account as recipient (must be different)
   const authenticatedInstances = manager.getAuthenticatedInstances();
@@ -266,14 +302,74 @@ async function executeMessageSent(accountId: string): Promise<string> {
   if (!recipientClient) throw new Error(`No client for recipient ${recipientInstance.id}`);
 
   const recipientWid = recipientClient.info?.wid?._serialized;
-  if (!recipientWid) throw new Error(`Cannot resolve WID for recipient ${recipientInstance.id}`);
+  const recipientUser = recipientClient.info?.wid?.user;
+  if (!recipientWid || !recipientUser) {
+    throw new Error(`Cannot resolve WID for recipient ${recipientInstance.id}`);
+  }
 
-  const template = pickRandom(MESSAGE_TEMPLATES);
-  const message = resolveSpintax(template);
+  let messageCount = 0;
+  const detailParts: string[] = [];
 
-  await simulateHumanSend(senderClient, recipientWid, message);
+  // vCard contact nudge: only on the very first message from this sender to
+  // this recipient. Renders as a tappable "save contact" card in WhatsApp —
+  // a strong positive trust signal if the recipient saves the number.
+  const alreadySeen = await prisma.warmupContactSeen.findUnique({
+    where: {
+      senderAccountId_recipientPhone: {
+        senderAccountId: accountId,
+        recipientPhone: recipientUser,
+      },
+    },
+  });
 
-  return `Sent to ${recipientInstance.id}: "${message}"`;
+  if (!alreadySeen) {
+    const displayName = senderClient.info?.pushname || senderAccount.phoneNumber;
+    const vcard = buildOwnVCard(senderAccount.phoneNumber, displayName);
+
+    // Short presence + pause before dropping the card, then a short gap
+    // before the text message so the card arrives first in chat order.
+    await senderClient.sendPresenceAvailable();
+    await sleep(randInt(1000, 2000));
+    await senderClient.sendMessage(recipientWid, vcard, { parseVCards: true });
+    messageCount++;
+    detailParts.push(`vcard:${recipientInstance.id}`);
+
+    await prisma.warmupContactSeen.create({
+      data: {
+        senderAccountId: accountId,
+        recipientPhone: recipientUser,
+      },
+    });
+
+    await sleep(randInt(2000, 4000));
+  }
+
+  // Primary text message (with typo-and-correction entropy layer)
+  const msg = generateWarmupMessage();
+  await simulateHumanSend(senderClient, recipientWid, msg.primary);
+  messageCount++;
+  detailParts.push(`${msg.bucket}:"${msg.primary}"`);
+
+  if (msg.correction) {
+    // Short pause before the starred correction, mimicking "oh I typo'd".
+    await sleep(randInt(3000, 6000));
+    await simulateHumanSend(senderClient, recipientWid, msg.correction);
+    messageCount++;
+    detailParts.push(`fix:"${msg.correction}"`);
+  }
+
+  return {
+    details: `→${recipientInstance.id} ${detailParts.join(' | ')}`,
+    messageCount,
+  };
+}
+
+function randInt(min: number, max: number): number {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 async function executeProfileUpdate(accountId: string): Promise<string> {

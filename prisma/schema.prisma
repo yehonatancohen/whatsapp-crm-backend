@@ -330,6 +330,15 @@ model WarmupLog {
   @@index([accountId, createdAt])
 }
 
+model WarmupContactSeen {
+  senderAccountId String
+  recipientPhone  String
+  firstSeenAt     DateTime @default(now())
+
+  @@id([senderAccountId, recipientPhone])
+  @@index([senderAccountId])
+}
+
 model Subscription {
   id                   String             @id @default(cuid())
   userId               String             @unique
