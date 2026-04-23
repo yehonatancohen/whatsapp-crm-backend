@@ -77,10 +77,12 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
       return;
     }
 
-    const chat = await client.getChatById(chatId);
-    if (!chat) {
-       res.status(404).json({ error: 'Chat not found' });
-       return;
+    let chat;
+    try {
+      chat = await client.getChatById(chatId);
+    } catch {
+      res.status(404).json({ error: 'Chat not found' });
+      return;
     }
 
     const messages = await chat.fetchMessages({ limit });
@@ -102,17 +104,21 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
       );
     }
 
-    res.json(messages.map(m => ({
-      id: m.id._serialized,
-      body: m.body,
-      fromMe: m.fromMe,
-      timestamp: m.timestamp,
-      type: m.type,
-      ack: m.ack,
-      author: m.author,
-      authorName: m.author ? nameMap[m.author as string] : undefined,
-      hasMedia: m.hasMedia || false,
-    })));
+    res.json(
+      messages
+        .filter(m => m.id?._serialized)
+        .map(m => ({
+          id: m.id._serialized,
+          body: m.body,
+          fromMe: m.fromMe,
+          timestamp: m.timestamp,
+          type: m.type,
+          ack: m.ack,
+          author: m.author,
+          authorName: m.author ? nameMap[m.author as string] : undefined,
+          hasMedia: m.hasMedia || false,
+        })),
+    );
   } catch (err) {
     next(err);
   }
