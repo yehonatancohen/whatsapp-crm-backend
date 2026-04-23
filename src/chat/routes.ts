@@ -79,8 +79,13 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
 
     let chat;
     try {
+      // getChatById can throw for some chat types; fall back to scanning getChats()
       chat = await client.getChatById(chatId);
     } catch {
+      const chats = await client.getChats();
+      chat = chats.find(c => c.id._serialized === chatId) ?? null;
+    }
+    if (!chat) {
       res.status(404).json({ error: 'Chat not found' });
       return;
     }
