@@ -29,6 +29,11 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
       try {
         const chats = await client.getChats();
         for (const chat of chats) {
+          // Guard against whatsapp-web.js shared-reference bug where all chats
+          // point to the same lastMessage object (the globally last seen message).
+          // Only include lastMessage if its remote JID matches this chat's ID.
+          const lastMsg = chat.lastMessage;
+          const lastMessageValid = !!lastMsg && lastMsg.id?.remote === chat.id._serialized;
           allChats.push({
             accountId: acc.id,
             accountLabel: acc.label,
@@ -37,10 +42,10 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
             unreadCount: chat.unreadCount,
             timestamp: chat.timestamp,
             isGroup: chat.isGroup,
-            lastMessage: chat.lastMessage ? {
-              body: chat.lastMessage.body,
-              timestamp: chat.lastMessage.timestamp,
-              fromMe: chat.lastMessage.fromMe,
+            lastMessage: lastMessageValid ? {
+              body: lastMsg.body,
+              timestamp: lastMsg.timestamp,
+              fromMe: lastMsg.fromMe,
             } : null
           });
         }
@@ -78,19 +83,36 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
     }
 
     let chat;
+    let usedGetChats = false;
     try {
       // getChatById can throw for some chat types; fall back to scanning getChats()
       chat = await client.getChatById(chatId);
     } catch {
       const chats = await client.getChats();
       chat = chats.find(c => c.id._serialized === chatId) ?? null;
+      usedGetChats = true;
     }
     if (!chat) {
       res.status(404).json({ error: 'Chat not found' });
       return;
     }
 
-    const messages = await chat.fetchMessages({ limit });
+    let messages = await chat.fetchMessages({ limit });
+
+    // getChatById returns a thin model from Store.Chat.get() whose message
+    // context may not be initialized, causing fetchMessages to return empty.
+    // getChats() returns fully-initialized models — fall back to that if needed.
+    if (messages.length === 0 && !usedGetChats) {
+      try {
+        const chats = await client.getChats();
+        const fullChat = chats.find(c => c.id._serialized === chatId);
+        if (fullChat) {
+          messages = await fullChat.fetchMessages({ limit });
+        }
+      } catch {
+        // keep the empty result from the first attempt
+      }
+    }
 
     // Resolve contact names for unique authors (group chats)
     const authorIds = [...new Set(
