@@ -180,7 +180,7 @@ export function createCampaignProcessorWorker(): Worker {
         }
 
         // Send the message with human-like behavior
-        await simulateHumanSend(client, chatId, resolvedText);
+        await simulateHumanSend(client, chatId, resolvedText, { linkPreview: true });
 
         // Mark as SENT
         await prisma.campaignMessage.update({
