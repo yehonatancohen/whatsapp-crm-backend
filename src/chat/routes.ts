@@ -116,12 +116,43 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
       messages = await Promise.race([fetchPromise, timeoutPromise]);
     } catch (err) {
       const errMsg = (err as Error)?.message || 'unknown';
-      logger.warn({ err: errMsg, chatId }, 'fetchMessages failed');
-      const isTimeout = errMsg.includes('timed out');
-      res.status(isTimeout ? 504 : 502).json({
-        error: isTimeout ? 'הטעינה ארכה יותר מדי. נסה שוב.' : `שגיאה בטעינת הודעות: ${errMsg}`,
-      });
-      return;
+
+      // "waitForChatLoading" means the chat exists in the list but hasn't been
+      // opened in WhatsApp Web's internal store yet (common for group chats not
+      // recently visited). Fix: open the chat via the internal store, then retry.
+      if (errMsg.includes('waitForChatLoading')) {
+        logger.warn({ chatId }, 'fetchMessages hit waitForChatLoading — opening chat and retrying');
+        try {
+          await (client as any).pupPage.evaluate(async (cid: string) => {
+            const chat = (window as any).Store?.Chat?.get(cid);
+            if (chat && (window as any).Store?.Cmd?.openChatBottom) {
+              await (window as any).Store.Cmd.openChatBottom(chat);
+            }
+          }, chatId);
+          // Small pause to let the store settle
+          await new Promise(r => setTimeout(r, 800));
+          const retryPromise = chat.fetchMessages({ limit });
+          const retryTimeout = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('fetchMessages timed out')), 20_000),
+          );
+          messages = await Promise.race([retryPromise, retryTimeout]);
+        } catch (retryErr) {
+          const retryMsg = (retryErr as Error)?.message || 'unknown';
+          logger.warn({ err: retryMsg, chatId }, 'fetchMessages retry also failed');
+          const isTimeout = retryMsg.includes('timed out');
+          res.status(isTimeout ? 504 : 502).json({
+            error: isTimeout ? 'הטעינה ארכה יותר מדי. נסה שוב.' : `שגיאה בטעינת הודעות: ${retryMsg}`,
+          });
+          return;
+        }
+      } else {
+        logger.warn({ err: errMsg, chatId }, 'fetchMessages failed');
+        const isTimeout = errMsg.includes('timed out');
+        res.status(isTimeout ? 504 : 502).json({
+          error: isTimeout ? 'הטעינה ארכה יותר מדי. נסה שוב.' : `שגיאה בטעינת הודעות: ${errMsg}`,
+        });
+        return;
+      }
     }
 
     // Resolve contact names for unique authors (group chats) — cap at 10 to avoid timeout
