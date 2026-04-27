@@ -124,9 +124,10 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
         logger.warn({ chatId }, 'fetchMessages hit waitForChatLoading — opening chat and retrying');
         try {
           await (client as any).pupPage.evaluate(async (cid: string) => {
-            const chat = (window as any).Store?.Chat?.get(cid);
-            if (chat && (window as any).Store?.Cmd?.openChatBottom) {
-              await (window as any).Store.Cmd.openChatBottom(chat);
+            const g = globalThis as any;
+            const chat = g.Store?.Chat?.get(cid);
+            if (chat && g.Store?.Cmd?.openChatBottom) {
+              await g.Store.Cmd.openChatBottom(chat);
             }
           }, chatId);
           // Small pause to let the store settle
