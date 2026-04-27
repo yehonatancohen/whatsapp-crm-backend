@@ -117,43 +117,61 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
     } catch (firstErr) {
       const firstErrMsg = (firstErr as Error)?.message || 'unknown';
 
-      // Hard timeout — tell the user immediately
       if (firstErrMsg.includes('timed out')) {
         res.status(504).json({ error: 'הטעינה ארכה יותר מדי. נסה שוב.' });
         return;
       }
 
-      // For any other error (waitForChatLoading, id issues, etc.) try to
-      // warm-up the chat in WhatsApp's internal store, re-fetch a fresh chat
-      // object, then retry once. If that still fails, return [] so the chat
-      // view at least opens without history rather than showing a 502 error.
-      logger.warn({ err: firstErrMsg, chatId }, 'fetchMessages failed — attempting chat warm-up and retry');
+      // chat.fetchMessages() blows up on undefined entries in WhatsApp's message
+      // model array (a known whatsapp-web.js issue for some chats). As a fallback
+      // we read the same Store directly in the browser with our own null-safe code,
+      // opening the chat first so the message list is populated.
+      logger.warn({ err: firstErrMsg, chatId }, 'fetchMessages failed — falling back to direct Store read');
       try {
-        await (client as any).pupPage.evaluate(async (cid: string) => {
-          const g = globalThis as any;
-          const storeChat = g.Store?.Chat?.get(cid);
-          if (storeChat && g.Store?.Cmd?.openChatBottom) {
-            await g.Store.Cmd.openChatBottom(storeChat);
-          }
-        }, chatId);
+        const rawMessages = await (client as any).pupPage.evaluate(
+          async (cid: string, lim: number) => {
+            const g = globalThis as any;
+            const storeChat = g.Store?.Chat?.get(cid);
+            if (!storeChat) return [];
 
-        // Give WhatsApp time to populate the chat model
-        await new Promise(r => setTimeout(r, 1500));
+            // Warm-up: ensure the message list is loaded
+            try {
+              if (g.Store?.Cmd?.openChatBottom) {
+                await g.Store.Cmd.openChatBottom(storeChat);
+                await new Promise((r) => setTimeout(r, 1000));
+              }
+            } catch { /* ignore if warm-up fails */ }
 
-        // Re-fetch a fresh chat reference — the original object may be stale
-        try {
-          chat = await client.getChatById(chatId);
-        } catch { /* keep existing chat object if re-fetch fails */ }
+            const models: any[] = storeChat.msgs?.getModels?.() ?? [];
+            const result: any[] = [];
 
-        const retryPromise = chat.fetchMessages({ limit });
-        const retryTimeout = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('fetchMessages timed out')), 20_000),
+            for (const msg of models) {
+              // Skip undefined / corrupt message objects
+              if (!msg?.id?._serialized) continue;
+              try {
+                result.push({
+                  id:        { _serialized: msg.id._serialized, fromMe: !!msg.id.fromMe },
+                  body:      msg.body ?? '',
+                  fromMe:    !!msg.id.fromMe,
+                  timestamp: msg.t ?? 0,
+                  type:      msg.type ?? 'chat',
+                  hasMedia:  !!(msg.hasMedia || msg.clientUrl || msg.mediaData),
+                  author:    msg.author ?? undefined,
+                  ack:       msg.ack ?? 0,
+                });
+              } catch { /* skip any message that still can't be serialised */ }
+            }
+
+            // Return the most-recent `lim` messages in chronological order
+            return result.slice(-Math.abs(lim));
+          },
+          chatId,
+          limit,
         );
-        messages = await Promise.race([retryPromise, retryTimeout]);
-      } catch (retryErr) {
-        const retryMsg = (retryErr as Error)?.message || 'unknown';
-        logger.warn({ err: retryMsg, chatId }, 'fetchMessages retry failed — returning empty history');
-        // Return an empty list rather than a 502 so the chat view still opens
+        messages = rawMessages ?? [];
+      } catch (storeErr) {
+        const storeErrMsg = (storeErr as Error)?.message || 'unknown';
+        logger.warn({ err: storeErrMsg, chatId }, 'direct Store read also failed — returning empty history');
         messages = [];
       }
     }
