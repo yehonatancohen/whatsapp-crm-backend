@@ -134,13 +134,33 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
             const storeChat = g.Store?.Chat?.get(cid);
             if (!storeChat) return [];
 
-            // Warm-up: ensure the message list is loaded
-            try {
-              if (g.Store?.Cmd?.openChatBottom) {
-                await g.Store.Cmd.openChatBottom(storeChat);
-                await new Promise((r) => setTimeout(r, 1000));
-              }
-            } catch { /* ignore if warm-up fails */ }
+            // Warm-up: try multiple WhatsApp Web internal APIs to force-load the
+            // chat's message list — WhatsApp changes these between versions.
+            let warmedUp = false;
+            const warmupApproaches = [
+              // v1: classic openChatBottom
+              () => g.Store?.Cmd?.openChatBottom?.(storeChat),
+              // v2: ConversationMsgs pagination (common in newer builds)
+              () => g.Store?.ConversationMsgs?.loadMoreMsgs?.(storeChat, { count: lim }),
+              // v3: loadEarlierMsgs on the chat model itself
+              () => storeChat.loadEarlierMsgs?.(),
+              // v4: fetchPage on the msgs collection
+              () => storeChat.msgs?.fetchPage?.({ count: lim }),
+            ];
+
+            for (const approach of warmupApproaches) {
+              try {
+                const result = approach();
+                if (result && typeof result.then === 'function') await result;
+                warmedUp = true;
+                break;
+              } catch { /* try next */ }
+            }
+
+            if (warmedUp) {
+              // Give the store time to settle after warm-up
+              await new Promise((r) => setTimeout(r, 1500));
+            }
 
             const models: any[] = storeChat.msgs?.getModels?.() ?? [];
             const result: any[] = [];
