@@ -107,54 +107,57 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
       return;
     }
 
-    let messages;
+    let messages: any[] = [];
     try {
       const fetchPromise = chat.fetchMessages({ limit });
       const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('fetchMessages timed out')), 20_000),
       );
       messages = await Promise.race([fetchPromise, timeoutPromise]);
-    } catch (err) {
-      const errMsg = (err as Error)?.message || 'unknown';
+    } catch (firstErr) {
+      const firstErrMsg = (firstErr as Error)?.message || 'unknown';
 
-      // "waitForChatLoading" means the chat exists in the list but hasn't been
-      // opened in WhatsApp Web's internal store yet (common for group chats not
-      // recently visited). Fix: open the chat via the internal store, then retry.
-      if (errMsg.includes('waitForChatLoading')) {
-        logger.warn({ chatId }, 'fetchMessages hit waitForChatLoading — opening chat and retrying');
-        try {
-          await (client as any).pupPage.evaluate(async (cid: string) => {
-            const g = globalThis as any;
-            const chat = g.Store?.Chat?.get(cid);
-            if (chat && g.Store?.Cmd?.openChatBottom) {
-              await g.Store.Cmd.openChatBottom(chat);
-            }
-          }, chatId);
-          // Small pause to let the store settle
-          await new Promise(r => setTimeout(r, 800));
-          const retryPromise = chat.fetchMessages({ limit });
-          const retryTimeout = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('fetchMessages timed out')), 20_000),
-          );
-          messages = await Promise.race([retryPromise, retryTimeout]);
-        } catch (retryErr) {
-          const retryMsg = (retryErr as Error)?.message || 'unknown';
-          logger.warn({ err: retryMsg, chatId }, 'fetchMessages retry also failed');
-          const isTimeout = retryMsg.includes('timed out');
-          res.status(isTimeout ? 504 : 502).json({
-            error: isTimeout ? 'הטעינה ארכה יותר מדי. נסה שוב.' : `שגיאה בטעינת הודעות: ${retryMsg}`,
-          });
-          return;
-        }
-      } else {
-        logger.warn({ err: errMsg, chatId }, 'fetchMessages failed');
-        const isTimeout = errMsg.includes('timed out');
-        res.status(isTimeout ? 504 : 502).json({
-          error: isTimeout ? 'הטעינה ארכה יותר מדי. נסה שוב.' : `שגיאה בטעינת הודעות: ${errMsg}`,
-        });
+      // Hard timeout — tell the user immediately
+      if (firstErrMsg.includes('timed out')) {
+        res.status(504).json({ error: 'הטעינה ארכה יותר מדי. נסה שוב.' });
         return;
       }
+
+      // For any other error (waitForChatLoading, id issues, etc.) try to
+      // warm-up the chat in WhatsApp's internal store, re-fetch a fresh chat
+      // object, then retry once. If that still fails, return [] so the chat
+      // view at least opens without history rather than showing a 502 error.
+      logger.warn({ err: firstErrMsg, chatId }, 'fetchMessages failed — attempting chat warm-up and retry');
+      try {
+        await (client as any).pupPage.evaluate(async (cid: string) => {
+          const g = globalThis as any;
+          const storeChat = g.Store?.Chat?.get(cid);
+          if (storeChat && g.Store?.Cmd?.openChatBottom) {
+            await g.Store.Cmd.openChatBottom(storeChat);
+          }
+        }, chatId);
+
+        // Give WhatsApp time to populate the chat model
+        await new Promise(r => setTimeout(r, 1500));
+
+        // Re-fetch a fresh chat reference — the original object may be stale
+        try {
+          chat = await client.getChatById(chatId);
+        } catch { /* keep existing chat object if re-fetch fails */ }
+
+        const retryPromise = chat.fetchMessages({ limit });
+        const retryTimeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('fetchMessages timed out')), 20_000),
+        );
+        messages = await Promise.race([retryPromise, retryTimeout]);
+      } catch (retryErr) {
+        const retryMsg = (retryErr as Error)?.message || 'unknown';
+        logger.warn({ err: retryMsg, chatId }, 'fetchMessages retry failed — returning empty history');
+        // Return an empty list rather than a 502 so the chat view still opens
+        messages = [];
+      }
     }
+
 
     // Resolve contact names for unique authors (group chats) — cap at 10 to avoid timeout
     const authorIds = [...new Set(
