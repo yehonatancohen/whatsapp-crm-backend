@@ -19,8 +19,8 @@ export const config = {
 
   // Email (Resend)
   resendApiKey: process.env.RESEND_API_KEY || '',
-  appName: process.env.APP_NAME || 'parties247',
-  frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
+  appName: process.env.APP_NAME || 'Sheder',
+  frontendUrl: process.env.FRONTEND_URL || 'https://sheder.parties247.co.il',
 
   // Stripe
   stripeSecretKey: process.env.STRIPE_SECRET_KEY || '',

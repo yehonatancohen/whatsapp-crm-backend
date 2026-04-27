@@ -20,7 +20,7 @@ export async function sendVerificationEmail(email: string, name: string, token: 
   const verifyUrl = `${config.frontendUrl}/verify-email?token=${token}`;
 
   await getResend().emails.send({
-    from: `${config.appName} <noreply@parties247.co.il>`,
+    from: `${config.appName} <noreply@sheder.parties247.co.il>`,
     to: email,
     subject: `Verify your email — ${config.appName}`,
     html: `
@@ -49,7 +49,7 @@ export async function sendPasswordResetEmail(email: string, name: string, token:
   const resetUrl = `${config.frontendUrl}/reset-password?token=${token}`;
 
   await getResend().emails.send({
-    from: `${config.appName} <noreply@parties247.co.il>`,
+    from: `${config.appName} <noreply@sheder.parties247.co.il>`,
     to: email,
     subject: `Reset your password — ${config.appName}`,
     html: `
