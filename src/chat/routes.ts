@@ -29,6 +29,10 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
       try {
         const chats = await client.getChats();
         for (const chat of chats) {
+          // Skip @lid (Linked Identity) chats — a WhatsApp multi-device feature
+          // not supported by whatsapp-web.js; opening them would throw.
+          if (chat.id._serialized.endsWith('@lid')) continue;
+
           allChats.push({
             accountId: acc.id,
             accountLabel: acc.label,
