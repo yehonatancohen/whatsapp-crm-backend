@@ -662,7 +662,81 @@ router.post('/:accountId/join-group', validate(z.object({ inviteLink: z.string()
   }
 });
 
-// 12. Send voice message (PTT)
+// 12. Send image
+const sendImageSchema = z.object({
+  data: z.string().min(1),     // base64 encoded image
+  mimeType: z.string().min(1),
+  caption: z.string().optional(),
+});
+
+router.post('/:accountId/:chatId/send-image', validate(sendImageSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { accountId, chatId } = req.params;
+    const { data, mimeType, caption } = req.body;
+
+    const manager = ClientManager.getInstance();
+    const instance = manager.getInstanceById(accountId);
+    if (!instance || instance.status !== 'AUTHENTICATED') {
+      res.status(400).json({ error: 'Account not authenticated' });
+      return;
+    }
+    const client = instance.getClient();
+    if (!client) {
+      res.status(400).json({ error: 'WhatsApp client not ready' });
+      return;
+    }
+
+    const media = new MessageMedia(mimeType, data);
+    const sendOptions: Record<string, unknown> = {};
+    if (caption) sendOptions.caption = caption;
+
+    const msg = await client.sendMessage(chatId, media, sendOptions);
+
+    res.json({
+      id: msg.id._serialized,
+      body: msg.body || '',
+      fromMe: msg.fromMe,
+      timestamp: msg.timestamp,
+      type: msg.type,
+      ack: msg.ack,
+      hasMedia: true,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// 13. Get profile picture URL for a chat
+router.get('/:accountId/:chatId/profile-pic', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { accountId, chatId } = req.params;
+
+    const manager = ClientManager.getInstance();
+    const instance = manager.getInstanceById(accountId);
+    if (!instance || instance.status !== 'AUTHENTICATED') {
+      res.json({ url: null });
+      return;
+    }
+    const client = instance.getClient();
+    if (!client) {
+      res.json({ url: null });
+      return;
+    }
+
+    let url: string | null = null;
+    try {
+      const contact = await client.getContactById(chatId);
+      const picUrl = await contact.getProfilePicUrl();
+      url = picUrl || null;
+    } catch { /* no profile pic */ }
+
+    res.json({ url });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// 14. Send voice message (PTT)
 const sendVoiceSchema = z.object({
   data: z.string().min(1),     // base64 encoded audio
   mimeType: z.string().min(1),
