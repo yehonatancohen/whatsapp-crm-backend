@@ -77,16 +77,29 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
       return;
     }
 
+    // @lid (Linked Identity) chats are a multi-device WhatsApp feature
+    // not supported by whatsapp-web.js — it throws on fetchMessages.
+    if (chatId.endsWith('@lid')) {
+      res.status(501).json({ error: 'צ\'אט מסוג Linked Identity (@lid) אינו נתמך כרגע' });
+      return;
+    }
+
     let chat;
     try {
       // getChatById can throw for some chat types; fall back to scanning getChats()
       chat = await client.getChatById(chatId);
     } catch {
-      const chats = await client.getChats();
-      chat = chats.find(c => c.id._serialized === chatId) ?? null;
+      try {
+        const chats = await client.getChats();
+        chat = chats.find(c => c.id._serialized === chatId) ?? null;
+      } catch (err) {
+        logger.warn({ err, chatId }, 'Failed to look up chat');
+        res.status(502).json({ error: 'לא ניתן לטעון את הצ\'אט. ייתכן שהחשבון אינו מסונכרן.' });
+        return;
+      }
     }
     if (!chat) {
-      res.status(404).json({ error: 'Chat not found' });
+      res.status(404).json({ error: 'הצ\'אט לא נמצא' });
       return;
     }
 
@@ -94,11 +107,16 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
     try {
       const fetchPromise = chat.fetchMessages({ limit });
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('fetchMessages timed out')), 30_000),
+        setTimeout(() => reject(new Error('fetchMessages timed out')), 20_000),
       );
       messages = await Promise.race([fetchPromise, timeoutPromise]);
-    } catch {
-      res.status(504).json({ error: 'Messages took too long to load. Try again later.' });
+    } catch (err) {
+      const errMsg = (err as Error)?.message || 'unknown';
+      logger.warn({ err: errMsg, chatId }, 'fetchMessages failed');
+      const isTimeout = errMsg.includes('timed out');
+      res.status(isTimeout ? 504 : 502).json({
+        error: isTimeout ? 'הטעינה ארכה יותר מדי. נסה שוב.' : `שגיאה בטעינת הודעות: ${errMsg}`,
+      });
       return;
     }
 
