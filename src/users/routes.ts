@@ -69,9 +69,16 @@ router.get('/stats/overview', async (_req: Request, res: Response, next: NextFun
 });
 
 // GET /api/users
-router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const search = req.query.search as string | undefined;
     const users = await prisma.user.findMany({
+      where: search ? {
+        OR: [
+          { name: { contains: search, mode: 'insensitive' } },
+          { email: { contains: search, mode: 'insensitive' } },
+        ],
+      } : undefined,
       select: {
         id: true,
         email: true,
@@ -146,6 +153,25 @@ router.patch(
         },
       });
       res.json(updated);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// POST /api/users/clear-rate-limit — clear Redis rate-limit counters for an IP (admin only)
+router.post(
+  '/clear-rate-limit',
+  validate(z.object({ ip: z.string().min(1) })),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { ip } = req.body;
+      const { redis } = await import('../shared/redis');
+      await Promise.allSettled([
+        (redis as any).del(`rl:auth:${ip}`),
+        (redis as any).del(`rl:api:${ip}`),
+      ]);
+      res.json({ message: `Rate limit cleared for IP: ${ip}` });
     } catch (err) {
       next(err);
     }

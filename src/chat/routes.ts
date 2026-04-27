@@ -90,12 +90,22 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
       return;
     }
 
-    const messages = await chat.fetchMessages({ limit });
+    let messages;
+    try {
+      const fetchPromise = chat.fetchMessages({ limit });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('fetchMessages timed out')), 30_000),
+      );
+      messages = await Promise.race([fetchPromise, timeoutPromise]);
+    } catch {
+      res.status(504).json({ error: 'Messages took too long to load. Try again later.' });
+      return;
+    }
 
-    // Resolve contact names for unique authors (group chats)
+    // Resolve contact names for unique authors (group chats) — cap at 10 to avoid timeout
     const authorIds = [...new Set(
-      messages.filter(m => m.author && !m.fromMe).map(m => m.author as string)
-    )].slice(0, 30);
+      messages.filter((m: any) => m.author && !m.fromMe).map((m: any) => m.author as string)
+    )].slice(0, 10);
     const nameMap: Record<string, string | undefined> = {};
     if (authorIds.length > 0) {
       await Promise.allSettled(
@@ -111,8 +121,8 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
 
     res.json(
       messages
-        .filter(m => m.id?._serialized)
-        .map(m => ({
+        .filter((m: any) => m.id?._serialized)
+        .map((m: any) => ({
           id: m.id._serialized,
           body: m.body,
           fromMe: m.fromMe,
@@ -616,7 +626,43 @@ router.get('/:accountId/:chatId/invite-link', async (req: Request, res: Response
   }
 });
 
-// 11. Send voice message (PTT)
+// 11. Join a group via invite link
+router.post('/:accountId/join-group', validate(z.object({ inviteLink: z.string().min(1) })), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { accountId } = req.params;
+    const { inviteLink } = req.body;
+
+    const match = (inviteLink as string).match(/chat\.whatsapp\.com\/([A-Za-z0-9_-]+)/);
+    if (!match) {
+      res.status(400).json({ error: 'Invalid WhatsApp group invite link' });
+      return;
+    }
+    const inviteCode = match[1];
+
+    const manager = ClientManager.getInstance();
+    const instance = manager.getInstanceById(accountId);
+    if (!instance || instance.status !== 'AUTHENTICATED') {
+      res.status(400).json({ error: 'Account not authenticated' });
+      return;
+    }
+    const client = instance.getClient();
+    if (!client) {
+      res.status(400).json({ error: 'WhatsApp client not ready' });
+      return;
+    }
+
+    try {
+      const chatId = await (client as any).acceptInvite(inviteCode);
+      res.json({ success: true, chatId });
+    } catch {
+      res.status(502).json({ error: 'Failed to join group. The link may be invalid or expired.' });
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+// 12. Send voice message (PTT)
 const sendVoiceSchema = z.object({
   data: z.string().min(1),     // base64 encoded audio
   mimeType: z.string().min(1),
