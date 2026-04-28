@@ -108,12 +108,22 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
     }
 
     let messages: any[] = [];
+    let needsStoreFallback = false;
     try {
       const fetchPromise = chat.fetchMessages({ limit });
       const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('fetchMessages timed out')), 20_000),
       );
       messages = await Promise.race([fetchPromise, timeoutPromise]);
+
+      // fetchMessages() can "succeed" with an empty array when the chat's messages
+      // haven't been loaded into WhatsApp Web's internal store yet (known wweb.js issue).
+      // If the chat has a lastMessage but fetchMessages returned nothing, fall through
+      // to the Store-based approach which warms up the chat first.
+      if ((!messages || messages.length === 0) && chat.lastMessage) {
+        logger.info({ chatId }, 'fetchMessages returned empty but chat has history — trying Store fallback');
+        needsStoreFallback = true;
+      }
     } catch (firstErr) {
       const firstErrMsg = (firstErr as Error)?.message || 'unknown';
 
@@ -122,11 +132,15 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
         return;
       }
 
-      // chat.fetchMessages() blows up on undefined entries in WhatsApp's message
-      // model array (a known whatsapp-web.js issue for some chats). As a fallback
-      // we read the same Store directly in the browser with our own null-safe code,
-      // opening the chat first so the message list is populated.
       logger.warn({ err: firstErrMsg, chatId }, 'fetchMessages failed — falling back to direct Store read');
+      needsStoreFallback = true;
+    }
+
+    // Fallback: read messages directly from WhatsApp Web's internal Store.
+    // This handles two cases:
+    // 1. fetchMessages() threw an error (corrupt message entries)
+    // 2. fetchMessages() returned empty despite the chat having messages
+    if (needsStoreFallback) {
       try {
         const rawMessages = await (client as any).pupPage.evaluate(
           async (cid: string, lim: number) => {
