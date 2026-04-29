@@ -109,6 +109,19 @@ export class WhatsAppInstance {
         const phoneNumber = this.client?.info?.wid?.user;
         const pushName = this.client?.info?.pushname;
         this.eventHandlers?.onAuthenticated(this.id, phoneNumber, pushName);
+
+        // Detect silent browser crashes: Puppeteer fires 'close' on the page
+        // when the browser process is killed (e.g. OOM), but wweb.js doesn't
+        // emit 'disconnected' in that case. We catch it here and update status.
+        const pupPage = (this.client as any)?.pupPage;
+        if (pupPage) {
+          pupPage.once('close', () => {
+            if (this.status === 'AUTHENTICATED') {
+              logger.warn({ instanceId: this.id }, 'Puppeteer page closed unexpectedly — marking DISCONNECTED');
+              this.setStatus('DISCONNECTED', 'Browser session ended unexpectedly');
+            }
+          });
+        }
       } catch (err: unknown) {
         this.error = err instanceof Error ? err.message : 'Ready handler error';
       }
@@ -160,21 +173,49 @@ export class WhatsAppInstance {
   async getGroups(): Promise<Array<{ id: string; name: string; participantsCount: number; isAdmin: boolean }>> {
     if (!this.client || this.status !== 'AUTHENTICATED') return [];
 
-    const chats = await this.client.getChats();
     const myId = this.client.info?.wid?._serialized;
 
-    return chats
-      .filter((chat) => chat.isGroup)
-      .map((chat) => {
-        const participants: any[] = (chat as any).participants ?? [];
-        const me = participants.find((p: any) => p.id._serialized === myId);
-        return {
-          id: chat.id._serialized,
-          name: chat.name,
-          participantsCount: participants.length,
-          isAdmin: me?.isAdmin === true || me?.isSuperAdmin === true,
-        };
-      });
+    try {
+      const groups = await (this.client as any).pupPage.evaluate((myWid: string) => {
+        const S = (globalThis as any).Store;
+        if (!S?.Chat) return [];
+        const models: any[] = S.Chat.getModels?.() ?? S.Chat._models ?? S.Chat.models ?? [];
+        const out: any[] = [];
+        for (const chat of models) {
+          if (!chat.isGroup) continue;
+          const sid: string = chat.id?._serialized ?? '';
+          if (!sid) continue;
+          const participants: any[] =
+            chat.groupMetadata?.participants?.getModels?.() ??
+            chat.groupMetadata?.participants?._models ??
+            (Array.isArray(chat.groupMetadata?.participants) ? chat.groupMetadata.participants : []);
+          const me = participants.find((p: any) => p.id?._serialized === myWid);
+          out.push({
+            id: sid,
+            name: chat.name || chat.id?.user || sid,
+            participantsCount: participants.length,
+            isAdmin: me?.isAdmin === true || me?.isSuperAdmin === true,
+          });
+        }
+        return out;
+      }, myId);
+
+      return groups ?? [];
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (
+        errMsg.includes('frame was detached') ||
+        errMsg.includes('Session closed') ||
+        errMsg.includes('Target closed') ||
+        errMsg.includes('Execution context was destroyed')
+      ) {
+        logger.warn({ instanceId: this.id }, 'Browser session ended — marking DISCONNECTED');
+        this.setStatus('DISCONNECTED', 'Browser session ended unexpectedly');
+      } else {
+        logger.warn({ instanceId: this.id, err: errMsg }, 'getGroups failed');
+      }
+      return [];
+    }
   }
 
   async destroy(): Promise<void> {

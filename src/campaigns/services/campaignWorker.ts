@@ -23,6 +23,7 @@ export function createCampaignProcessorWorker(): Worker {
     'campaign-process',
     async (job: Job<{ campaignId: string }>) => {
       const { campaignId } = job.data;
+      const jobStartMs = Date.now();
 
       // Fetch campaign to check current status
       const campaign = await prisma.campaign.findUnique({
@@ -131,8 +132,7 @@ export function createCampaignProcessorWorker(): Worker {
 
         logger.warn({ campaignId, messageId: message.id }, 'No eligible account — message failed');
 
-        // Schedule next job immediately to try the next message
-        await scheduleNextJob(campaignId, campaign.messagesPerMinute);
+        await scheduleNextJob(campaignId, campaign.messagesPerMinute, jobStartMs);
         return;
       }
 
@@ -256,8 +256,8 @@ export function createCampaignProcessorWorker(): Worker {
         );
       }
 
-      // Schedule the next message processing job with delay
-      await scheduleNextJob(campaignId, campaign.messagesPerMinute);
+      // Schedule next job, subtracting time already spent so the effective rate matches messagesPerMinute
+      await scheduleNextJob(campaignId, campaign.messagesPerMinute, jobStartMs);
     },
     { connection: redis, concurrency: 1 },
   );
@@ -424,9 +424,13 @@ export function createCampaignSchedulerWorker(): Worker {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-/** Schedule the next campaign message processing job with appropriate delay. */
-async function scheduleNextJob(campaignId: string, messagesPerMinute: number): Promise<void> {
-  const delayMs = Math.round(60_000 / messagesPerMinute);
+/** Schedule the next campaign message processing job with appropriate delay.
+ *  jobStartMs: subtract elapsed processing time so the effective send rate matches messagesPerMinute.
+ */
+async function scheduleNextJob(campaignId: string, messagesPerMinute: number, jobStartMs = 0): Promise<void> {
+  const targetIntervalMs = Math.round(60_000 / messagesPerMinute);
+  const elapsedMs = jobStartMs > 0 ? Date.now() - jobStartMs : 0;
+  const delayMs = Math.max(1_000, targetIntervalMs - elapsedMs);
 
   await campaignProcessQueue.add(
     'process-message',
