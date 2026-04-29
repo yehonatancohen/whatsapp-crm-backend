@@ -233,13 +233,14 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
         .filter((m: any) => m.id?._serialized)
         .map((m: any) => ({
           id: m.id._serialized,
-          body: m.body,
+          body: typeof m.body === 'string' ? m.body : '',
           fromMe: m.fromMe,
           timestamp: m.timestamp,
           type: m.type,
           ack: m.ack,
-          author: m.author,
-          authorName: m.author ? nameMap[m.author as string] : undefined,
+          // author from the WA Web store can be a JID object — normalize to string
+          author: typeof m.author === 'string' ? m.author : (m.author?._serialized ?? undefined),
+          authorName: m.author ? nameMap[typeof m.author === 'string' ? m.author : m.author?._serialized] : undefined,
           hasMedia: m.hasMedia || false,
         })),
     );
