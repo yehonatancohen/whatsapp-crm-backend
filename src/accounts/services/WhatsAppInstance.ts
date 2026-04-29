@@ -176,31 +176,32 @@ export class WhatsAppInstance {
     const myId = this.client.info?.wid?._serialized;
 
     try {
-      const groups = await (this.client as any).pupPage.evaluate((myWid: string) => {
-        const S = (globalThis as any).Store;
-        if (!S?.Chat) return [];
-        const models: any[] = S.Chat.getModels?.() ?? S.Chat._models ?? S.Chat.models ?? [];
-        const out: any[] = [];
-        for (const chat of models) {
-          if (!chat.isGroup) continue;
-          const sid: string = chat.id?._serialized ?? '';
-          if (!sid) continue;
-          const participants: any[] =
-            chat.groupMetadata?.participants?.getModels?.() ??
-            chat.groupMetadata?.participants?._models ??
-            (Array.isArray(chat.groupMetadata?.participants) ? chat.groupMetadata.participants : []);
-          const me = participants.find((p: any) => p.id?._serialized === myWid);
-          out.push({
-            id: sid,
-            name: chat.name || chat.id?.user || sid,
-            participantsCount: participants.length,
-            isAdmin: me?.isAdmin === true || me?.isSuperAdmin === true,
-          });
-        }
-        return out;
-      }, myId);
+      // Primary approach: use the official getChats() API (works in all wweb.js versions)
+      const chats = await this.client.getChats();
+      const out: Array<{ id: string; name: string; participantsCount: number; isAdmin: boolean }> = [];
 
-      return groups ?? [];
+      for (const chat of chats) {
+        if (!chat.isGroup) continue;
+        const sid = chat.id._serialized;
+        if (!sid) continue;
+        const groupChat = chat as any;
+        const participants: any[] =
+          groupChat.participants?.getModels?.() ??
+          groupChat.participants?._models ??
+          (Array.isArray(groupChat.participants) ? groupChat.participants :
+            groupChat.groupMetadata?.participants?.getModels?.() ??
+            groupChat.groupMetadata?.participants?._models ??
+            (Array.isArray(groupChat.groupMetadata?.participants) ? groupChat.groupMetadata.participants : []));
+        const me = participants.find((p: any) => p.id?._serialized === myId);
+        out.push({
+          id: sid,
+          name: chat.name || chat.id.user || sid,
+          participantsCount: participants.length,
+          isAdmin: me?.isAdmin === true || me?.isSuperAdmin === true,
+        });
+      }
+
+      return out;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       if (

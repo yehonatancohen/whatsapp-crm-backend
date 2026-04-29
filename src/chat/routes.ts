@@ -15,10 +15,10 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
     const manager = ClientManager.getInstance();
     // Get all accounts for user to check ownership
     const accounts = await manager.getAllAccounts(req.user!.userId, false);
-    
+
     // For each authenticated account, fetch chats
     const allChats = [];
-    
+
     for (const acc of accounts) {
       if (acc.status !== 'AUTHENTICATED') continue;
       const instance = manager.getInstanceById(acc.id);
@@ -107,107 +107,198 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
       return;
     }
 
+    // ─── Multi-layer message fetching strategy ─────────────────────────
+    // WhatsApp Web frequently changes its internal Store APIs, so we use
+    // a layered approach with multiple fallbacks:
+    //   Layer 1: syncHistory() + fetchMessages()   (wweb.js ≥1.28)
+    //   Layer 2: fetchMessages() alone              (classic path)
+    //   Layer 3: Direct Store read with warmup      (deepest fallback)
     let messages: any[] = [];
-    let needsStoreFallback = false;
-    try {
+
+    // Helper: try syncHistory (new API in wweb.js ≥1.28) to force-load
+    // messages into WhatsApp Web's internal Store before reading them.
+    const trySyncHistory = async () => {
+      try {
+        if (typeof (client as any).syncHistory === 'function') {
+          await Promise.race([
+            (client as any).syncHistory(chatId),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('syncHistory timeout')), 8000)),
+          ]);
+          logger.debug({ chatId }, 'syncHistory completed');
+          return true;
+        }
+      } catch (e) {
+        logger.debug({ chatId, err: (e as Error)?.message }, 'syncHistory failed (non-fatal)');
+      }
+      return false;
+    };
+
+    // Helper: call fetchMessages with a timeout guard
+    const tryFetchMessages = async (timeoutMs = 15_000): Promise<any[]> => {
       const fetchPromise = chat.fetchMessages({ limit });
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('fetchMessages timed out')), 20_000),
+        setTimeout(() => reject(new Error('fetchMessages timed out')), timeoutMs),
       );
-      messages = await Promise.race([fetchPromise, timeoutPromise]);
+      return await Promise.race([fetchPromise, timeoutPromise]);
+    };
 
-      // fetchMessages() can "succeed" with an empty array when the chat's messages
-      // haven't been loaded into WhatsApp Web's internal store yet (known wweb.js issue).
-      // If the chat has a lastMessage but fetchMessages returned nothing, fall through
-      // to the Store-based approach which warms up the chat first.
-      if ((!messages || messages.length === 0) && chat.lastMessage) {
-        logger.info({ chatId }, 'fetchMessages returned empty but chat has history — trying Store fallback');
-        needsStoreFallback = true;
+    // Helper: read messages directly from WhatsApp Web's internal Store
+    const tryStoreRead = async (): Promise<any[]> => {
+      const pupPage = (client as any).pupPage;
+      if (!pupPage) return [];
+
+      const rawMessages = await pupPage.evaluate(
+        async (cid: string, lim: number) => {
+          const g = globalThis as any;
+          const S = g.Store;
+          if (!S?.Chat) return { msgs: [], debug: 'no Store.Chat' };
+
+          const storeChat = S.Chat.get(cid);
+          if (!storeChat) return { msgs: [], debug: 'chat not in Store' };
+
+          // Warm-up: try every known WhatsApp Web internal API to force-load
+          // the chat's message list. WA changes these between versions so we
+          // try many approaches and keep track of what worked.
+          const warmupResults: string[] = [];
+          const warmupApproaches: Array<[string, () => any]> = [
+            ['openChatBottom', () => S.Cmd?.openChatBottom?.(storeChat)],
+            ['ConversationMsgs.loadMoreMsgs', () => S.ConversationMsgs?.loadMoreMsgs?.(storeChat, { count: lim })],
+            ['loadEarlierMsgs', () => storeChat.loadEarlierMsgs?.()],
+            ['msgs.fetchPage', () => storeChat.msgs?.fetchPage?.({ count: lim })],
+            ['ChatLoad.loadAllMsgs', () => S.ChatLoad?.loadAllMsgs?.(storeChat)],
+            ['Msg.find', () => S.Msg?.find?.(cid)],
+            ['openChatAt', () => S.Cmd?.openChatAt?.(storeChat, storeChat.t || Date.now() / 1000)],
+            ['loadMoreMsgsEarlier', () => storeChat.loadMoreMsgsEarlier?.()],
+            ['msgs.loadMore', () => storeChat.msgs?.loadMore?.()],
+          ];
+
+          for (const [name, approach] of warmupApproaches) {
+            try {
+              const result = approach();
+              if (result && typeof result.then === 'function') {
+                await Promise.race([
+                  result,
+                  new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000)),
+                ]);
+              }
+              warmupResults.push(`${name}:ok`);
+            } catch (e: any) {
+              warmupResults.push(`${name}:${e?.message || 'fail'}`);
+            }
+          }
+
+          // Give the store time to settle after warm-up
+          await new Promise((r) => setTimeout(r, 2000));
+
+          // Try multiple ways to access the message collection
+          let models: any[] =
+            storeChat.msgs?.getModels?.() ??
+            storeChat.msgs?._models ??
+            storeChat.msgs?.models ??
+            (Array.isArray(storeChat.msgs) ? storeChat.msgs : []);
+
+          // If still empty, try one more time after additional delay
+          if (models.length === 0) {
+            await new Promise((r) => setTimeout(r, 2000));
+            models =
+              storeChat.msgs?.getModels?.() ??
+              storeChat.msgs?._models ??
+              storeChat.msgs?.models ??
+              [];
+          }
+
+          const result: any[] = [];
+          for (const msg of models) {
+            if (!msg?.id?._serialized) continue;
+            try {
+              result.push({
+                id: { _serialized: msg.id._serialized, fromMe: !!msg.id.fromMe },
+                body: msg.body ?? '',
+                fromMe: !!msg.id.fromMe,
+                timestamp: msg.t ?? 0,
+                type: msg.type ?? 'chat',
+                hasMedia: !!(msg.hasMedia || msg.clientUrl || msg.mediaData),
+                author: msg.author ?? undefined,
+                ack: msg.ack ?? 0,
+              });
+            } catch { /* skip corrupt messages */ }
+          }
+
+          return {
+            msgs: result.slice(-Math.abs(lim)),
+            debug: `warmup=[${warmupResults.join(',')}] models=${models.length} results=${result.length}`,
+          };
+        },
+        chatId,
+        limit,
+      );
+
+      if (rawMessages?.debug) {
+        logger.info({ chatId, storeDebug: rawMessages.debug }, 'Store read diagnostics');
       }
-    } catch (firstErr) {
-      const firstErrMsg = (firstErr as Error)?.message || 'unknown';
+      return rawMessages?.msgs ?? [];
+    };
 
-      if (firstErrMsg.includes('timed out')) {
-        res.status(504).json({ error: 'הטעינה ארכה יותר מדי. נסה שוב.' });
+    // ─── Execute layered strategy ────────────────────────────────────
+    try {
+      // Layer 1: sync + fetch
+      await trySyncHistory();
+      try {
+        messages = await tryFetchMessages();
+      } catch (fetchErr) {
+        const errMsg = (fetchErr as Error)?.message || 'unknown';
+        if (errMsg.includes('timed out')) {
+          logger.warn({ chatId }, 'fetchMessages timed out');
+        } else {
+          logger.warn({ chatId, err: errMsg }, 'fetchMessages threw error');
+        }
+      }
+
+      // Layer 2: if empty, retry fetchMessages after a short delay
+      // (gives WA Web time to populate the store after syncHistory)
+      if ((!messages || messages.length === 0) && chat.lastMessage) {
+        logger.info({ chatId }, 'fetchMessages returned empty — retrying after delay');
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          messages = await tryFetchMessages(10_000);
+        } catch {
+          // fall through to Layer 3
+        }
+      }
+
+      // Layer 3: Direct Store read (deepest fallback)
+      if ((!messages || messages.length === 0) && chat.lastMessage) {
+        logger.info({ chatId }, 'fetchMessages still empty — falling back to direct Store read');
+        try {
+          messages = await tryStoreRead();
+        } catch (storeErr) {
+          const storeErrMsg = (storeErr as Error)?.message || 'unknown';
+          logger.warn({ err: storeErrMsg, chatId }, 'Store read failed');
+        }
+      }
+
+      // Layer 4: Last resort — if everything failed but the chat has messages,
+      // do a syncHistory + longer wait + final fetchMessages attempt
+      if ((!messages || messages.length === 0) && chat.lastMessage) {
+        logger.info({ chatId }, 'All approaches empty — final retry with extended delay');
+        await trySyncHistory();
+        await new Promise(r => setTimeout(r, 3000));
+        try {
+          messages = await tryFetchMessages(12_000);
+        } catch {
+          // give up
+        }
+      }
+
+      logger.info({ chatId, count: messages?.length ?? 0 }, 'Messages fetched');
+    } catch (outerErr) {
+      const outerErrMsg = (outerErr as Error)?.message || 'unknown';
+      if (outerErrMsg.includes('frame was detached') || outerErrMsg.includes('Session closed') || outerErrMsg.includes('Target closed')) {
+        res.status(502).json({ error: 'חיבור הוואטסאפ נותק. נסה שוב.' });
         return;
       }
-
-      logger.warn({ err: firstErrMsg, chatId }, 'fetchMessages failed — falling back to direct Store read');
-      needsStoreFallback = true;
-    }
-
-    // Fallback: read messages directly from WhatsApp Web's internal Store.
-    // This handles two cases:
-    // 1. fetchMessages() threw an error (corrupt message entries)
-    // 2. fetchMessages() returned empty despite the chat having messages
-    if (needsStoreFallback) {
-      try {
-        const rawMessages = await (client as any).pupPage.evaluate(
-          async (cid: string, lim: number) => {
-            const g = globalThis as any;
-            const storeChat = g.Store?.Chat?.get(cid);
-            if (!storeChat) return [];
-
-            // Warm-up: try multiple WhatsApp Web internal APIs to force-load the
-            // chat's message list — WhatsApp changes these between versions.
-            let warmedUp = false;
-            const warmupApproaches = [
-              // v1: classic openChatBottom
-              () => g.Store?.Cmd?.openChatBottom?.(storeChat),
-              // v2: ConversationMsgs pagination (common in newer builds)
-              () => g.Store?.ConversationMsgs?.loadMoreMsgs?.(storeChat, { count: lim }),
-              // v3: loadEarlierMsgs on the chat model itself
-              () => storeChat.loadEarlierMsgs?.(),
-              // v4: fetchPage on the msgs collection
-              () => storeChat.msgs?.fetchPage?.({ count: lim }),
-            ];
-
-            for (const approach of warmupApproaches) {
-              try {
-                const result = approach();
-                if (result && typeof result.then === 'function') await result;
-                warmedUp = true;
-                break;
-              } catch { /* try next */ }
-            }
-
-            if (warmedUp) {
-              // Give the store time to settle after warm-up
-              await new Promise((r) => setTimeout(r, 1500));
-            }
-
-            const models: any[] = storeChat.msgs?.getModels?.() ?? [];
-            const result: any[] = [];
-
-            for (const msg of models) {
-              // Skip undefined / corrupt message objects
-              if (!msg?.id?._serialized) continue;
-              try {
-                result.push({
-                  id:        { _serialized: msg.id._serialized, fromMe: !!msg.id.fromMe },
-                  body:      msg.body ?? '',
-                  fromMe:    !!msg.id.fromMe,
-                  timestamp: msg.t ?? 0,
-                  type:      msg.type ?? 'chat',
-                  hasMedia:  !!(msg.hasMedia || msg.clientUrl || msg.mediaData),
-                  author:    msg.author ?? undefined,
-                  ack:       msg.ack ?? 0,
-                });
-              } catch { /* skip any message that still can't be serialised */ }
-            }
-
-            // Return the most-recent `lim` messages in chronological order
-            return result.slice(-Math.abs(lim));
-          },
-          chatId,
-          limit,
-        );
-        messages = rawMessages ?? [];
-      } catch (storeErr) {
-        const storeErrMsg = (storeErr as Error)?.message || 'unknown';
-        logger.warn({ err: storeErrMsg, chatId }, 'direct Store read also failed — returning empty history');
-        messages = [];
-      }
+      logger.error({ err: outerErrMsg, chatId }, 'Unexpected error fetching messages');
+      messages = [];
     }
 
 
@@ -233,14 +324,13 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
         .filter((m: any) => m.id?._serialized)
         .map((m: any) => ({
           id: m.id._serialized,
-          body: typeof m.body === 'string' ? m.body : '',
+          body: m.body,
           fromMe: m.fromMe,
           timestamp: m.timestamp,
           type: m.type,
           ack: m.ack,
-          // author from the WA Web store can be a JID object — normalize to string
-          author: typeof m.author === 'string' ? m.author : (m.author?._serialized ?? undefined),
-          authorName: m.author ? nameMap[typeof m.author === 'string' ? m.author : m.author?._serialized] : undefined,
+          author: m.author,
+          authorName: m.author ? nameMap[m.author as string] : undefined,
           hasMedia: m.hasMedia || false,
         })),
     );
@@ -578,12 +668,12 @@ router.post('/:accountId/:chatId/add-participants', validate(addParticipantsSche
           success: code === 200,
           message: code === 200 ? 'Added'
             : code === 403 ? 'Privacy settings - invite sent instead'
-            : code === 404 ? 'Number not on WhatsApp'
-            : code === 408 ? 'Recently left the group'
-            : code === 409 ? 'Already in group'
-            : code === 417 ? 'Cannot add to community'
-            : code === 419 ? 'Group is full'
-            : (info?.message || `Error code: ${code}`),
+              : code === 404 ? 'Number not on WhatsApp'
+                : code === 408 ? 'Recently left the group'
+                  : code === 409 ? 'Already in group'
+                    : code === 417 ? 'Cannot add to community'
+                      : code === 419 ? 'Group is full'
+                        : (info?.message || `Error code: ${code}`),
           inviteSent: info?.isInviteV4Sent || false,
         };
       }
@@ -881,6 +971,124 @@ router.post('/:accountId/:chatId/send-voice', validate(sendVoiceSchema), async (
       ack: msg.ack,
       hasMedia: true,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Diagnostic endpoint: test message fetching approaches ─────────
+// Returns detailed diagnostics about which message fetching strategies work
+// for a given chat, without modifying state.
+router.get('/:accountId/:chatId/messages/debug', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { accountId, chatId } = req.params;
+    const limit = parseInt(req.query.limit as string) || 20;
+
+    const manager = ClientManager.getInstance();
+    const instance = manager.getInstanceById(accountId);
+    if (!instance || instance.status !== 'AUTHENTICATED') {
+      res.status(400).json({ error: 'Account not authenticated' });
+      return;
+    }
+    const client = instance.getClient();
+    if (!client) {
+      res.status(400).json({ error: 'WhatsApp client not ready' });
+      return;
+    }
+
+    const results: Record<string, any> = {
+      chatId,
+      limit,
+      wwejsVersion: null,
+      hasSyncHistory: typeof (client as any).syncHistory === 'function',
+      hasPupPage: !!(client as any).pupPage,
+    };
+
+    // Check wweb.js version
+    try {
+      results.wwejsVersion = require('whatsapp-web.js/package.json').version;
+    } catch { results.wwejsVersion = 'unknown'; }
+
+    // Try getChatById
+    let chat: any = null;
+    try {
+      chat = await client.getChatById(chatId);
+      results.chatFound = true;
+      results.chatHasLastMessage = !!chat.lastMessage;
+      results.chatLastMessageBody = chat.lastMessage?.body?.slice(0, 50) || null;
+    } catch (e) {
+      results.chatFound = false;
+      results.chatError = (e as Error)?.message;
+      res.json(results);
+      return;
+    }
+
+    // Try syncHistory
+    if (results.hasSyncHistory) {
+      try {
+        const syncResult = await Promise.race([
+          (client as any).syncHistory(chatId),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
+        ]);
+        results.syncHistory = { success: true, result: syncResult };
+      } catch (e) {
+        results.syncHistory = { success: false, error: (e as Error)?.message };
+      }
+    }
+
+    // Try fetchMessages
+    try {
+      const msgs = await Promise.race([
+        chat.fetchMessages({ limit }),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 15000)),
+      ]);
+      results.fetchMessages = {
+        count: msgs?.length ?? 0,
+        firstMsg: msgs?.[0] ? { body: msgs[0].body?.slice(0, 50), fromMe: msgs[0].fromMe, timestamp: msgs[0].timestamp } : null,
+        lastMsg: msgs?.length > 0 ? { body: msgs[msgs.length - 1].body?.slice(0, 50), fromMe: msgs[msgs.length - 1].fromMe, timestamp: msgs[msgs.length - 1].timestamp } : null,
+      };
+    } catch (e) {
+      results.fetchMessages = { count: 0, error: (e as Error)?.message };
+    }
+
+    // Try Store read
+    try {
+      const pupPage = (client as any).pupPage;
+      if (pupPage) {
+        const storeResult = await pupPage.evaluate(
+          (cid: string) => {
+            const S = (globalThis as any).Store;
+            const info: any = {
+              hasStore: !!S,
+              hasChat: !!S?.Chat,
+              hasCmd: !!S?.Cmd,
+              hasConversationMsgs: !!S?.ConversationMsgs,
+              hasChatLoad: !!S?.ChatLoad,
+              hasMsg: !!S?.Msg,
+            };
+            if (S?.Chat) {
+              const chat = S.Chat.get(cid);
+              info.chatInStore = !!chat;
+              if (chat) {
+                info.hasMsgs = !!chat.msgs;
+                info.hasGetModels = typeof chat.msgs?.getModels === 'function';
+                info.hasModelsArray = Array.isArray(chat.msgs?._models);
+                info.modelsCount = chat.msgs?.getModels?.()?.length ?? chat.msgs?._models?.length ?? 0;
+                info.hasLoadEarlierMsgs = typeof chat.loadEarlierMsgs === 'function';
+                info.hasFetchPage = typeof chat.msgs?.fetchPage === 'function';
+              }
+            }
+            return info;
+          },
+          chatId,
+        );
+        results.storeInfo = storeResult;
+      }
+    } catch (e) {
+      results.storeInfo = { error: (e as Error)?.message };
+    }
+
+    res.json(results);
   } catch (err) {
     next(err);
   }
