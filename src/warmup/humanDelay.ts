@@ -54,7 +54,7 @@ export async function preFetchLinkPreview(client: Client, text: string): Promise
         await Promise.race([
             page.evaluate(async (messageText: string) => {
                 try {
-                    const req = (globalThis as any).require;
+                    const req = (window as any).require;
                     if (typeof req !== 'function') return;
 
                     // ── Step 1: extract URL using WALinkify (same as wwjs sendMessage) ──
