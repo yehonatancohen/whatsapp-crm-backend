@@ -18,7 +18,7 @@ export function createScheduledMessageWorker() {
         }
         const client = instance.getClient();
         if (!client) throw new Error('WhatsApp client not ready');
-        await client.sendMessage(chatId, body, { linkPreview: true });
+        await client.sendMessage(chatId, body);
       };
 
       const count = await processDueMessages(sendFn);
