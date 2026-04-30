@@ -72,15 +72,22 @@ export async function preFetchLinkPreview(client: Client, text: string): Promise
                     if (!link) return;
 
                     // ── Step 2: pre-fetch via WA's link preview Store ───
-                    // WA Web has moved this API across several namespaces over time.
-                    const getLinkPreview =
-                        store?.LinkPreview?.getLinkPreview?.bind(store.LinkPreview) ??
-                        store?.LinkPreviewStore?.getLinkPreview?.bind(store.LinkPreviewStore) ??
-                        store?.Preview?.getLinkPreview?.bind(store.Preview) ??
-                        null;
+                    // WA Web has moved this API across several namespaces over time;
+                    // try every known path until one resolves.
+                    const previewFns = [
+                        store?.LinkPreview?.getLinkPreview?.bind(store.LinkPreview),
+                        store?.LinkPreviewStore?.getLinkPreview?.bind(store.LinkPreviewStore),
+                        store?.Preview?.getLinkPreview?.bind(store.Preview),
+                        store?.OGPreview?.getLinkPreview?.bind(store.OGPreview),
+                        // Some builds expose it directly on the Store root
+                        typeof store?.getLinkPreview === 'function' ? store.getLinkPreview.bind(store) : undefined,
+                    ].filter(Boolean);
 
-                    if (typeof getLinkPreview === 'function') {
-                        await getLinkPreview(link);
+                    for (const fn of previewFns) {
+                        try {
+                            await (fn as Function)(link);
+                            break; // first one that resolves wins
+                        } catch { /* try next */ }
                     }
                 } catch {
                     // Non-fatal — sendMessage will attempt its own preview fetch

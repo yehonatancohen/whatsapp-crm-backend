@@ -28,29 +28,55 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
       if (!client) continue;
 
       try {
-        const chats = await client.getChats();
-        for (const chat of chats) {
-          // Skip @lid (Linked Identity) chats — a WhatsApp multi-device feature
-          // not supported by whatsapp-web.js; opening them would throw.
-          if (chat.id._serialized.endsWith('@lid')) continue;
+        // Read minimal chat data directly from WA Web's Store.
+        // client.getChats() serialises full chat objects (all messages in
+        // memory) which is extremely slow and can OOM on accounts with many
+        // active group chats.  The Store read extracts only the 6 fields we
+        // need and uses Array.find to pick the first non-empty model
+        // collection (??  does not fall through on an empty array []).
+        const rawChats: any[] = await (client as any).pupPage.evaluate(() => {
+          const S = (globalThis as any).Store;
+          if (!S?.Chat) return [];
+          const candidates = [
+            S.Chat.getModels?.(),
+            S.Chat._models,
+            S.Chat.models,
+          ];
+          const models: any[] =
+            candidates.find((c) => Array.isArray(c) && c.length > 0) ?? [];
 
+          const out: any[] = [];
+          for (const chat of models) {
+            const sid: string = chat.id?._serialized ?? '';
+            if (!sid || sid.endsWith('@lid') || sid.endsWith('@broadcast')) continue;
+            const lm = chat.lastMessage ?? chat.msgs?.last ?? null;
+            out.push({
+              chatId:      sid,
+              name:        chat.name || chat.id?.user || sid,
+              unreadCount: chat.unreadCount ?? 0,
+              timestamp:   chat.t ?? chat.timestamp ?? 0,
+              isGroup:     !!chat.isGroup,
+              lastMessage: lm
+                ? {
+                    body:      typeof lm.body === 'string' ? lm.body : '',
+                    timestamp: lm.t ?? lm.timestamp ?? 0,
+                    fromMe:    !!lm.id?.fromMe,
+                  }
+                : null,
+            });
+          }
+          return out;
+        });
+
+        for (const chat of rawChats) {
           allChats.push({
-            accountId: acc.id,
+            accountId:    acc.id,
             accountLabel: acc.label,
-            chatId: chat.id._serialized,
-            name: chat.name || chat.id.user,
-            unreadCount: chat.unreadCount,
-            timestamp: chat.timestamp,
-            isGroup: chat.isGroup,
-            lastMessage: chat.lastMessage ? {
-              body: chat.lastMessage.body,
-              timestamp: chat.lastMessage.timestamp,
-              fromMe: chat.lastMessage.fromMe,
-            } : null
+            ...chat,
           });
         }
       } catch (err) {
-        // skip if one client fails
+        logger.debug({ accountId: acc.id, err: (err as Error)?.message }, 'conversations: skipping account');
       }
     }
 
