@@ -36,13 +36,13 @@ function sleep(ms: number): Promise<void> {
 // ─── Link Preview Pre-warming ───────────────────────────────────────────────
 
 /**
- * Pre-fetch link preview data by calling WhatsApp Web's internal link preview
- * Store before the actual sendMessage. This gives WA servers time to fetch OG
- * metadata (title, description, thumbnail) so it's cached when sendMessage
- * calls the same API internally.
+ * Pre-fetch link preview data using the same WhatsApp Web internal modules
+ * that whatsapp-web.js v1.34+ uses in sendMessage. Calling this before the
+ * actual send gives WhatsApp's servers time to crawl and cache the OG metadata
+ * so getLinkPreview() returns data when sendMessage calls it a few seconds later.
  *
- * WA Web changes these Store APIs between versions, so we try multiple paths
- * and fall back to a plain URL regex if the Store URL finder isn't available.
+ * Uses window.require('WAWebLinkPreviewChatAction') and window.require('WALinkify')
+ * — the exact APIs used by wwjs's injected Utils.js sendMessage implementation.
  *
  * Runs with a 10-second timeout to avoid blocking the send indefinitely.
  */
@@ -54,40 +54,36 @@ export async function preFetchLinkPreview(client: Client, text: string): Promise
         await Promise.race([
             page.evaluate(async (messageText: string) => {
                 try {
-                    const store = (globalThis as any).Store;
-                    if (!store) return;
+                    const req = (window as any).require;
+                    if (typeof req !== 'function') return;
 
-                    // ── Step 1: extract URL ─────────────────────────────
-                    // Try WA's own link finder first; fall back to plain regex.
-                    let link: string | null = null;
-                    if (typeof store?.Validators?.findLink === 'function') {
-                        link = store.Validators.findLink(messageText) ?? null;
-                    } else if (typeof store?.URLUtils?.findLink === 'function') {
-                        link = store.URLUtils.findLink(messageText) ?? null;
-                    }
-                    if (!link) {
-                        const m = messageText.match(/https?:\/\/[^\s<>"{}|\\^`[\]]+/);
-                        link = m ? m[0] : null;
-                    }
+                    // ── Step 1: extract URL using WALinkify (same as wwjs sendMessage) ──
+                    const { findLink } = req('WALinkify');
+                    const link = findLink(messageText);
                     if (!link) return;
 
-                    // ── Step 2: pre-fetch via WA's link preview Store ───
-                    // WA Web has moved this API across several namespaces over time;
-                    // try every known path until one resolves.
-                    const previewFns = [
-                        store?.LinkPreview?.getLinkPreview?.bind(store.LinkPreview),
-                        store?.LinkPreviewStore?.getLinkPreview?.bind(store.LinkPreviewStore),
-                        store?.Preview?.getLinkPreview?.bind(store.Preview),
-                        store?.OGPreview?.getLinkPreview?.bind(store.OGPreview),
-                        // Some builds expose it directly on the Store root
-                        typeof store?.getLinkPreview === 'function' ? store.getLinkPreview.bind(store) : undefined,
-                    ].filter(Boolean);
+                    // ── Step 2: pre-fetch the link preview ───────────────
+                    // Primary: WAWebLinkPreviewChatAction (wwjs v1.34+ module system)
+                    // Fallback: Store-based paths for older WA Web builds
+                    let fetched = false;
+                    try {
+                        const linkPreviewAction = req('WAWebLinkPreviewChatAction');
+                        if (typeof linkPreviewAction?.getLinkPreview === 'function') {
+                            await linkPreviewAction.getLinkPreview(link);
+                            fetched = true;
+                        }
+                    } catch { /* try fallback */ }
 
-                    for (const fn of previewFns) {
-                        try {
-                            await (fn as Function)(link);
-                            break; // first one that resolves wins
-                        } catch { /* try next */ }
+                    if (!fetched) {
+                        const store = (globalThis as any).Store;
+                        const previewFns = [
+                            store?.LinkPreview?.getLinkPreview?.bind(store.LinkPreview),
+                            store?.LinkPreviewStore?.getLinkPreview?.bind(store.LinkPreviewStore),
+                            store?.Preview?.getLinkPreview?.bind(store.Preview),
+                        ].filter(Boolean);
+                        for (const fn of previewFns) {
+                            try { await (fn as Function)(link); break; } catch { /* try next */ }
+                        }
                     }
                 } catch {
                     // Non-fatal — sendMessage will attempt its own preview fetch
