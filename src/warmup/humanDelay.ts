@@ -36,17 +36,17 @@ function sleep(ms: number): Promise<void> {
 // ─── Link Preview Pre-warming ───────────────────────────────────────────────
 
 /**
- * Pre-fetch link preview data by calling WhatsApp Web's internal
- * Store.LinkPreview.getLinkPreview before the actual sendMessage.
+ * Pre-fetch link preview data by calling WhatsApp Web's internal link preview
+ * Store before the actual sendMessage. This gives WA servers time to fetch OG
+ * metadata (title, description, thumbnail) so it's cached when sendMessage
+ * calls the same API internally.
  *
- * This gives WhatsApp's servers time to fetch OG metadata (title,
- * description, thumbnail) from the target URL. The result is cached
- * internally, so when sendMessage later calls getLinkPreview again,
- * the data is returned instantly.
+ * WA Web changes these Store APIs between versions, so we try multiple paths
+ * and fall back to a plain URL regex if the Store URL finder isn't available.
  *
  * Runs with a 10-second timeout to avoid blocking the send indefinitely.
  */
-async function preFetchLinkPreview(client: Client, text: string): Promise<void> {
+export async function preFetchLinkPreview(client: Client, text: string): Promise<void> {
     try {
         const page = (client as any).pupPage;
         if (!page) return;
@@ -55,20 +55,41 @@ async function preFetchLinkPreview(client: Client, text: string): Promise<void> 
             page.evaluate(async (messageText: string) => {
                 try {
                     const store = (globalThis as any).Store;
-                    if (!store?.Validators?.findLink || !store?.LinkPreview?.getLinkPreview) return;
+                    if (!store) return;
 
-                    const link = store.Validators.findLink(messageText);
+                    // ── Step 1: extract URL ─────────────────────────────
+                    // Try WA's own link finder first; fall back to plain regex.
+                    let link: string | null = null;
+                    if (typeof store?.Validators?.findLink === 'function') {
+                        link = store.Validators.findLink(messageText) ?? null;
+                    } else if (typeof store?.URLUtils?.findLink === 'function') {
+                        link = store.URLUtils.findLink(messageText) ?? null;
+                    }
+                    if (!link) {
+                        const m = messageText.match(/https?:\/\/[^\s<>"{}|\\^`[\]]+/);
+                        link = m ? m[0] : null;
+                    }
                     if (!link) return;
 
-                    await store.LinkPreview.getLinkPreview(link);
+                    // ── Step 2: pre-fetch via WA's link preview Store ───
+                    // WA Web has moved this API across several namespaces over time.
+                    const getLinkPreview =
+                        store?.LinkPreview?.getLinkPreview?.bind(store.LinkPreview) ??
+                        store?.LinkPreviewStore?.getLinkPreview?.bind(store.LinkPreviewStore) ??
+                        store?.Preview?.getLinkPreview?.bind(store.Preview) ??
+                        null;
+
+                    if (typeof getLinkPreview === 'function') {
+                        await getLinkPreview(link);
+                    }
                 } catch {
-                    // Silently fail — sendMessage will retry on its own
+                    // Non-fatal — sendMessage will attempt its own preview fetch
                 }
             }, text),
-            sleep(10_000), // Hard timeout: don't block more than 10s
+            sleep(10_000), // Hard cap: don't block the send more than 10 s
         ]);
     } catch {
-        // Silently fail — sendMessage will retry on its own
+        // Non-fatal
     }
 }
 

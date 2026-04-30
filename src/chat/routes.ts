@@ -5,6 +5,7 @@ import { authenticate } from '../shared/middleware/auth';
 import { validate } from '../shared/middleware/validate';
 import { ClientManager } from '../accounts/services/ClientManager';
 import { logger } from '../shared/logger';
+import { preFetchLinkPreview } from '../warmup/humanDelay';
 
 const router = Router();
 router.use(authenticate);
@@ -440,6 +441,9 @@ router.post('/:accountId/:chatId/send', validate(sendSchema), async (req: Reques
         // ignore — send without quote if lookup fails
       }
     }
+
+    // Pre-fetch link preview so WA servers have OG metadata cached before send
+    await preFetchLinkPreview(client, body);
 
     const msg = await client.sendMessage(chatId, body, sendOptions);
 
