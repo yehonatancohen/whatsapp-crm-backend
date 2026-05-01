@@ -29,21 +29,38 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
 
       try {
         // Read minimal chat data directly from WA Web's Store.
-        // client.getChats() serialises full chat objects (all messages in
-        // memory) which is extremely slow and can OOM on accounts with many
-        // active group chats.  The Store read extracts only the 6 fields we
-        // need and uses Array.find to pick the first non-empty model
-        // collection (??  does not fall through on an empty array []).
-        const rawChats: any[] = await (client as any).pupPage.evaluate(() => {
+        // The evaluate is async so we can properly await getModels(), which in
+        // newer WA Web versions is an async method that fetches ALL chats from
+        // the server (including private chats).  The previous sync read only
+        // returned the in-memory _models / models arrays, which on accounts with
+        // many active campaign groups may only contain groups — private chats
+        // that haven't been recently opened would be on a later page and missed.
+        const rawChats: any[] = await (client as any).pupPage.evaluate(async () => {
           const S = (globalThis as any).Store;
           if (!S?.Chat) return [];
-          const candidates = [
-            S.Chat.getModels?.(),
-            S.Chat._models,
-            S.Chat.models,
-          ];
-          const models: any[] =
-            candidates.find((c) => Array.isArray(c) && c.length > 0) ?? [];
+
+          let models: any[] = [];
+
+          // getModels() is async in WA Web ≥ some version — await it so we get
+          // ALL chats (including private), not just the current in-memory page.
+          try {
+            const result = S.Chat.getModels?.();
+            if (result && typeof (result as any).then === 'function') {
+              models = await Promise.race([
+                result as Promise<any[]>,
+                new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 8000)),
+              ]) ?? [];
+            } else if (Array.isArray(result) && result.length > 0) {
+              models = result;
+            }
+          } catch (_e) { /* fall through */ }
+
+          // Synchronous fallback for older WA Web builds
+          if (models.length === 0) {
+            models = Array.isArray(S.Chat._models) ? S.Chat._models
+                   : Array.isArray(S.Chat.models)  ? S.Chat.models
+                   : [];
+          }
 
           const out: any[] = [];
           for (const chat of models) {
@@ -68,10 +85,8 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
           return out;
         });
 
-        // Store may be empty on startup before WA Web finishes its initial
-        // chat sync.  Fall back to the official getChats() API which forces
-        // a full load from the WA server.  It is slower but guarantees we
-        // return historical chat data even on a cold start.
+        // If the async Store read still returned nothing (cold start / Store not
+        // yet initialised), fall back to the official getChats() API.
         if (rawChats.length === 0) {
           logger.debug({ accountId: acc.id }, 'conversations: Store empty, falling back to getChats()');
           try {
