@@ -545,7 +545,7 @@ router.post('/:accountId/:chatId/send', validate(sendSchema), async (req: Reques
         const recentMsgs = await chat.fetchMessages({ limit: 200 });
         const quotedMsg = recentMsgs.find(m => m.id._serialized === quotedMessageId);
         if (quotedMsg) {
-          sendOptions = { ...sendOptions, quotedMessageId: quotedMsg };
+          sendOptions = { ...sendOptions, quotedMessageId: quotedMsg.id._serialized };
         }
       } catch {
         // ignore — send without quote if lookup fails

@@ -92,7 +92,7 @@ app.use(requestLogger);
 // Stripe webhook needs raw body BEFORE json parser
 // app.use('/api/subscriptions/webhook', express.raw({ type: 'application/json' }), stripeWebhookRouter);
 
-app.use(express.json());
+app.use(express.json({ limit: '25mb' }));
 
 // Rate limiting
 app.use('/api/auth', authLimiter);
