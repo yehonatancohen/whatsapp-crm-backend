@@ -28,6 +28,9 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
       if (!client) continue;
 
       try {
+        const pupPage = (client as any).pupPage;
+        if (!pupPage) continue;
+
         // Read all chats from WA Web's Store with several fallback strategies.
         //
         // The core problem: Store.Chat.models only contains the chats WA Web
@@ -39,7 +42,8 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
         //  1. Await getModels() — async in WA Web ≥ some version, may fetch all
         //  2. If still no private chats, try Store pagination (loadMore / fetchPage)
         //  3. Sync _models / models fallback for old WA Web builds
-        const rawChats: any[] = await (client as any).pupPage.evaluate(async () => {
+        const rawChats: any[] = await Promise.race([
+          pupPage.evaluate(async () => {
           const S = (globalThis as any).Store;
           if (!S?.Chat) return [];
 
@@ -113,7 +117,11 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
             });
           }
           return out;
-        });
+          }),
+          new Promise<any[]>((_, reject) =>
+            setTimeout(() => reject(new Error('conversations evaluate timeout')), 10_000),
+          ),
+        ]);
 
         // Node.js-side fallback: if the Store still has no private chats, call
         // client.getChats() which is authoritative but serialises full objects.
@@ -540,16 +548,9 @@ router.post('/:accountId/:chatId/send', validate(sendSchema), async (req: Reques
 
     let sendOptions: Record<string, unknown> = { linkPreview: true };
     if (quotedMessageId) {
-      try {
-        const chat = await client.getChatById(chatId);
-        const recentMsgs = await chat.fetchMessages({ limit: 200 });
-        const quotedMsg = recentMsgs.find(m => m.id._serialized === quotedMessageId);
-        if (quotedMsg) {
-          sendOptions = { ...sendOptions, quotedMessageId: quotedMsg.id._serialized };
-        }
-      } catch {
-        // ignore — send without quote if lookup fails
-      }
+      // whatsapp-web.js sendMessage accepts quotedMessageId as a string ID;
+      // it resolves the message via getMessageById internally.
+      sendOptions = { ...sendOptions, quotedMessageId };
     }
 
     // Pre-fetch link preview so WA servers have OG metadata cached before send
