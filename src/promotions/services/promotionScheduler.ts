@@ -32,7 +32,7 @@ function getNowInTimezone(tz: string): { hhmm: string; dayOfWeek: number; dateKe
   const dayOfWeek = new Date(Date.UTC(year, month - 1, day, 12)).getUTCDay(); // 0=Sun … 6=Sat
 
   const result = { hhmm, dayOfWeek, dateKey };
-  logger.info({ tz, ...result, utc: now.toISOString() }, 'Calculated time in timezone');
+  logger.debug({ tz, ...result, utc: now.toISOString() }, 'Calculated time in timezone');
   return result;
 }
 
@@ -49,7 +49,7 @@ function shouldFireNow(
 
   // Check day-of-week (empty array = every day)
   if (daysOfWeek.length > 0 && !daysOfWeek.includes(dayOfWeek)) {
-    logger.info({ promotionId, dayOfWeek, daysOfWeek }, 'Promotion skipped: day of week mismatch');
+    logger.debug({ promotionId, dayOfWeek, daysOfWeek }, 'Promotion skipped: day of week mismatch');
     return { fire: false, matchedTime: '', dateKey };
   }
 
@@ -71,7 +71,7 @@ export function createPromotionSchedulerWorker(): Worker {
   const worker = new Worker(
     'promotion-scheduler',
     async (_job: Job) => {
-      logger.info('Promotion scheduler tick');
+      logger.debug('Promotion scheduler tick');
 
       const promotions = await prisma.groupPromotion.findMany({
         where: { isActive: true },
@@ -81,16 +81,16 @@ export function createPromotionSchedulerWorker(): Worker {
         },
       });
 
-      logger.info({ activePromotionsCount: promotions.length }, 'Checked active promotions');
+      logger.debug({ activePromotionsCount: promotions.length }, 'Checked active promotions');
 
       for (const promotion of promotions) {
         try {
           if (promotion.groups.length === 0 || promotion.messages.length === 0) {
-            logger.info({ promotionId: promotion.id }, 'Promotion has no groups or active messages - skipping');
+            logger.debug({ promotionId: promotion.id }, 'Promotion has no groups or active messages - skipping');
             continue;
           }
           if (promotion.accountIds.length === 0) {
-            logger.info({ promotionId: promotion.id }, 'Promotion has no accounts assigned - skipping');
+            logger.debug({ promotionId: promotion.id }, 'Promotion has no accounts assigned - skipping');
             continue;
           }
 
