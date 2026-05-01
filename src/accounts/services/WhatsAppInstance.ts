@@ -21,11 +21,19 @@ export interface ChatMessageEvent {
   isGroup: boolean;
 }
 
+export interface ChatMessageAckEvent {
+  accountId: string;
+  chatId: string;
+  messageId: string;
+  ack: number;
+}
+
 export interface AccountEventHandlers {
   onStatusChange: (id: string, status: AccountStatusType, error?: string) => void;
   onQr: (id: string, qrCode: string) => void;
   onAuthenticated: (id: string, phoneNumber?: string, pushName?: string) => void;
   onMessage?: (msg: ChatMessageEvent) => void;
+  onMessageAck?: (msg: ChatMessageAckEvent) => void;
 }
 
 export class WhatsAppInstance {
@@ -166,6 +174,22 @@ export class WhatsAppInstance {
         });
       } catch (err) {
         logger.debug({ instanceId: this.id, err }, 'message_create handler error');
+      }
+    });
+
+    // Message ack events (sent, delivered, read)
+    this.client.on('message_ack', async (msg, ack) => {
+      try {
+        if (!this.eventHandlers?.onMessageAck) return;
+        const chat = await msg.getChat();
+        this.eventHandlers.onMessageAck({
+          accountId: this.id,
+          chatId: chat.id._serialized,
+          messageId: msg.id._serialized,
+          ack,
+        });
+      } catch (err) {
+        logger.debug({ instanceId: this.id, err }, 'message_ack handler error');
       }
     });
   }

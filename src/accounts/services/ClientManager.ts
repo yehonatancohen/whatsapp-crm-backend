@@ -65,6 +65,7 @@ export class ClientManager {
       onAuthenticated: (id, phoneNumber, pushName) =>
         this.handleAuthenticated(id, userId, phoneNumber, pushName),
       onMessage: (msg) => this.handleIncomingMessage(userId, msg),
+      onMessageAck: (msg) => emitToUser(userId, 'chat:message_ack', msg),
     };
 
     // Create and start the WhatsApp instance
@@ -147,6 +148,7 @@ export class ClientManager {
         onAuthenticated: (id, phoneNumber, pushName) =>
           this.handleAuthenticated(id, userId, phoneNumber, pushName),
         onMessage: (msg) => this.handleIncomingMessage(userId, msg),
+      onMessageAck: (msg) => emitToUser(userId, 'chat:message_ack', msg),
       };
 
       const newInstance = new WhatsAppInstance(
@@ -394,6 +396,7 @@ export class ClientManager {
       onAuthenticated: (id, phoneNumber, pushName) =>
         this.handleAuthenticated(id, userId, phoneNumber, pushName),
       onMessage: (msg) => this.handleIncomingMessage(userId, msg),
+      onMessageAck: (msg) => emitToUser(userId, 'chat:message_ack', msg),
     };
 
     const instance = new WhatsAppInstance(accountId, account.label, account.proxy || undefined, eventHandlers);
@@ -426,6 +429,7 @@ export class ClientManager {
         onAuthenticated: (id, phoneNumber, pushName) =>
           this.handleAuthenticated(id, userId, phoneNumber, pushName),
         onMessage: (msg) => this.handleIncomingMessage(userId, msg),
+      onMessageAck: (msg) => emitToUser(userId, 'chat:message_ack', msg),
       };
 
       const instance = new WhatsAppInstance(account.id, account.label, account.proxy || undefined, eventHandlers);
