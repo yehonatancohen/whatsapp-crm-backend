@@ -68,6 +68,38 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
           return out;
         });
 
+        // Store may be empty on startup before WA Web finishes its initial
+        // chat sync.  Fall back to the official getChats() API which forces
+        // a full load from the WA server.  It is slower but guarantees we
+        // return historical chat data even on a cold start.
+        if (rawChats.length === 0) {
+          logger.debug({ accountId: acc.id }, 'conversations: Store empty, falling back to getChats()');
+          try {
+            const chats = await client.getChats();
+            for (const chat of chats) {
+              const sid: string = chat.id._serialized;
+              if (!sid || sid.endsWith('@lid') || sid.endsWith('@broadcast')) continue;
+              const lm = (chat as any).lastMessage ?? null;
+              rawChats.push({
+                chatId:      sid,
+                name:        chat.name || (chat.id as any).user || sid,
+                unreadCount: chat.unreadCount ?? 0,
+                timestamp:   chat.timestamp ?? 0,
+                isGroup:     chat.isGroup,
+                lastMessage: lm
+                  ? {
+                      body:      typeof lm.body === 'string' ? lm.body : '',
+                      timestamp: lm.timestamp ?? 0,
+                      fromMe:    !!lm.fromMe,
+                    }
+                  : null,
+              });
+            }
+          } catch (fbErr) {
+            logger.debug({ accountId: acc.id, err: (fbErr as Error)?.message }, 'conversations: getChats() fallback failed');
+          }
+        }
+
         for (const chat of rawChats) {
           allChats.push({
             accountId:    acc.id,
