@@ -65,6 +65,7 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
           };
 
           let models = await readModels();
+          logger.info({ accountId: acc.id, initialModels: models.length }, 'Pagination debug: start');
 
           // WhatsApp Web often paginates the chat list. Load more pages so we get
           // a good history (including private chats that might be buried under groups).
@@ -96,13 +97,20 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
                 await new Promise((r) => setTimeout(r, 300));
                 models = await readModels();
                 if (models.length > prevLen) {
+                  logger.info({ accountId: acc.id, attemptIdx: paginationAttempts.indexOf(attempt), oldLen: prevLen, newLen: models.length }, 'Pagination debug: successful load');
                   success = true;
                   break; // attempt worked, move to next page
                 }
               } catch (_e) { /* try next fallback */ }
             }
-            if (!success) break; // no more pages available
+            if (!success) {
+              logger.info({ accountId: acc.id, loopIdx: i }, 'Pagination debug: no more pages');
+              break; // no more pages available
+            }
           }
+          
+          const priv = models.filter((m: any) => (m.id?._serialized ?? '').endsWith('@c.us')).length;
+          logger.info({ accountId: acc.id, finalModels: models.length, privateChats: priv }, 'Pagination debug: end');
 
           const out: any[] = [];
           for (const chat of models) {
