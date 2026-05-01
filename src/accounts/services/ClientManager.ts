@@ -250,6 +250,13 @@ export class ClientManager {
         phoneNumber,
         pushName,
       });
+
+      // Signal the frontend to load conversations now that the account is
+      // ready.  We delay slightly so WA Web's internal Store has time to
+      // finish its initial chat sync before the client calls GET /conversations.
+      setTimeout(() => {
+        emitToUser(userId, 'conversations:refresh', { accountId });
+      }, 5000);
     } catch (err) {
       logger.error({ accountId, err }, 'Failed to persist authentication');
     }
