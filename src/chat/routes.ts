@@ -66,11 +66,14 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
 
           let models = await readModels();
 
-          // If we have chats but no private (@c.us) ones, try Store pagination
-          // to load later pages where private chats typically live.
-          const hasPrivate = () => models.some((m: any) => (m.id?._serialized ?? '').endsWith('@c.us'));
+          // WhatsApp Web often paginates the chat list. Load more pages so we get
+          // a good history (including private chats that might be buried under groups).
+          let prevLen = 0;
+          for (let i = 0; i < 10; i++) {
+            if (models.length >= 800) break; // enough history
+            if (i > 0 && models.length === prevLen) break; // stopped growing
+            prevLen = models.length;
 
-          if (!hasPrivate()) {
             const paginationAttempts: Array<() => any> = [
               () => S.Chat.loadMore?.(),
               () => S.Chat.fetchMore?.(),
@@ -80,20 +83,25 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
               () => S.ChatCollection?.loadMore?.(),
             ];
 
+            let success = false;
             for (const attempt of paginationAttempts) {
-              if (hasPrivate()) break;
               try {
                 const result = attempt();
                 if (result && typeof (result as any).then === 'function') {
                   await Promise.race([
                     result,
-                    new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000)),
+                    new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500)),
                   ]);
                 }
-                await new Promise((r) => setTimeout(r, 500));
+                await new Promise((r) => setTimeout(r, 300));
                 models = await readModels();
-              } catch (_e) { /* try next */ }
+                if (models.length > prevLen) {
+                  success = true;
+                  break; // attempt worked, move to next page
+                }
+              } catch (_e) { /* try next fallback */ }
             }
+            if (!success) break; // no more pages available
           }
 
           const out: any[] = [];
@@ -106,7 +114,7 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
               name:        chat.name || chat.id?.user || sid,
               unreadCount: chat.unreadCount ?? 0,
               timestamp:   chat.t ?? chat.timestamp ?? 0,
-              isGroup:     !!chat.isGroup,
+              isGroup:     !!chat.isGroup || sid.endsWith('@g.us'),
               lastMessage: lm
                 ? {
                     body:      typeof lm.body === 'string' ? lm.body : '',
