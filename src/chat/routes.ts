@@ -28,38 +28,68 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
       if (!client) continue;
 
       try {
-        // Read minimal chat data directly from WA Web's Store.
-        // The evaluate is async so we can properly await getModels(), which in
-        // newer WA Web versions is an async method that fetches ALL chats from
-        // the server (including private chats).  The previous sync read only
-        // returned the in-memory _models / models arrays, which on accounts with
-        // many active campaign groups may only contain groups — private chats
-        // that haven't been recently opened would be on a later page and missed.
+        // Read all chats from WA Web's Store with several fallback strategies.
+        //
+        // The core problem: Store.Chat.models only contains the chats WA Web
+        // has paged into memory.  On campaign-heavy accounts the first page is
+        // all groups; private chats (less recently messaged) sit on later pages
+        // that haven't been fetched yet.
+        //
+        // Strategy:
+        //  1. Await getModels() — async in WA Web ≥ some version, may fetch all
+        //  2. If still no private chats, try Store pagination (loadMore / fetchPage)
+        //  3. Sync _models / models fallback for old WA Web builds
         const rawChats: any[] = await (client as any).pupPage.evaluate(async () => {
           const S = (globalThis as any).Store;
           if (!S?.Chat) return [];
 
-          let models: any[] = [];
+          // Helper: read whatever the Store currently has in memory
+          const readModels = async (): Promise<any[]> => {
+            try {
+              const r = S.Chat.getModels?.();
+              if (r && typeof (r as any).then === 'function') {
+                return (await Promise.race([
+                  r as Promise<any[]>,
+                  new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 8000)),
+                ])) ?? [];
+              }
+              if (Array.isArray(r) && r.length > 0) return r;
+            } catch (_e) { /* fall through */ }
+            return Array.isArray(S.Chat._models) ? S.Chat._models
+                 : Array.isArray(S.Chat.models)  ? S.Chat.models
+                 : [];
+          };
 
-          // getModels() is async in WA Web ≥ some version — await it so we get
-          // ALL chats (including private), not just the current in-memory page.
-          try {
-            const result = S.Chat.getModels?.();
-            if (result && typeof (result as any).then === 'function') {
-              models = await Promise.race([
-                result as Promise<any[]>,
-                new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 8000)),
-              ]) ?? [];
-            } else if (Array.isArray(result) && result.length > 0) {
-              models = result;
+          let models = await readModels();
+
+          // If we have chats but no private (@c.us) ones, try Store pagination
+          // to load later pages where private chats typically live.
+          const hasPrivate = () => models.some((m: any) => (m.id?._serialized ?? '').endsWith('@c.us'));
+
+          if (!hasPrivate()) {
+            const paginationAttempts: Array<() => any> = [
+              () => S.Chat.loadMore?.(),
+              () => S.Chat.fetchMore?.(),
+              () => S.Chat.fetchPage?.(),
+              () => S.Chat.loadAll?.(),
+              () => S.ConversationList?.loadMore?.(),
+              () => S.ChatCollection?.loadMore?.(),
+            ];
+
+            for (const attempt of paginationAttempts) {
+              if (hasPrivate()) break;
+              try {
+                const result = attempt();
+                if (result && typeof (result as any).then === 'function') {
+                  await Promise.race([
+                    result,
+                    new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000)),
+                  ]);
+                }
+                await new Promise((r) => setTimeout(r, 500));
+                models = await readModels();
+              } catch (_e) { /* try next */ }
             }
-          } catch (_e) { /* fall through */ }
-
-          // Synchronous fallback for older WA Web builds
-          if (models.length === 0) {
-            models = Array.isArray(S.Chat._models) ? S.Chat._models
-                   : Array.isArray(S.Chat.models)  ? S.Chat.models
-                   : [];
           }
 
           const out: any[] = [];
@@ -85,15 +115,22 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
           return out;
         });
 
-        // If the async Store read still returned nothing (cold start / Store not
-        // yet initialised), fall back to the official getChats() API.
-        if (rawChats.length === 0) {
-          logger.debug({ accountId: acc.id }, 'conversations: Store empty, falling back to getChats()');
+        // Node.js-side fallback: if the Store still has no private chats, call
+        // client.getChats() which is authoritative but serialises full objects.
+        // We merge it with rawChats so groups already found are not re-fetched.
+        const hasPrivateChats = rawChats.some((c: any) => (c.chatId as string).endsWith('@c.us'));
+        if (!hasPrivateChats) {
+          logger.debug({ accountId: acc.id }, 'conversations: no private chats from Store, falling back to getChats()');
           try {
-            const chats = await client.getChats();
-            for (const chat of chats) {
+            const existingIds = new Set(rawChats.map((c: any) => c.chatId));
+            const fetched = await Promise.race([
+              client.getChats(),
+              new Promise<never>((_, rej) => setTimeout(() => rej(new Error('getChats timeout')), 20_000)),
+            ]);
+            for (const chat of fetched) {
               const sid: string = chat.id._serialized;
               if (!sid || sid.endsWith('@lid') || sid.endsWith('@broadcast')) continue;
+              if (existingIds.has(sid)) continue;
               const lm = (chat as any).lastMessage ?? null;
               rawChats.push({
                 chatId:      sid,
