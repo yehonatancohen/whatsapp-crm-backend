@@ -27,83 +27,98 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
 
       try {
         const pupPage = (client as any).pupPage;
+        if (!pupPage) continue;
 
-        // Scroll the WA Web chat list pane to trigger its virtual-list loader.
-        // WA Web only loads chats as the user scrolls — this mimics that scroll
-        // so private chats (less recent than campaign groups) get loaded.
-        if (pupPage) {
-          const paginationResult = await Promise.race([
-            pupPage.evaluate(async () => {
-              const g = globalThis as any;
-              let Chat: any;
-              try { Chat = g.window.require('WAWebCollections').Chat; }
-              catch { return { ok: false, reason: 'no-WAWebCollections' }; }
+        // In current WA Web (multi-device), private chats are stored as @lid
+        // (Linked Identity) in the internal Store. client.getChats() explicitly
+        // filters these out, so private chats never appear via that API.
+        //
+        // Fix: read the Store directly, resolve each @lid to its @c.us phone
+        // WID via chat.contact.id._serialized, and return both groups and privates.
+        const rawChats: Array<{
+          chatId: string; name: string; unreadCount: number; timestamp: number;
+          isGroup: boolean; resolvedFromLid: boolean;
+          lastMessage: { body: string; timestamp: number; fromMe: boolean } | null;
+        }> = await Promise.race([
+          pupPage.evaluate(async () => {
+            const g = globalThis as any;
+            let ChatCollection: any;
+            try { ChatCollection = g.window.require('WAWebCollections').Chat; }
+            catch {
+              const S = g.window?.Store ?? g.Store;
+              ChatCollection = S?.Chat;
+            }
+            if (!ChatCollection) return [];
 
-              const models: any[] = Chat.getModelsArray?.() ?? Chat._models ?? [];
-
-              // Tally WID suffixes so we can see what types are in the collection
-              const suffixCount: Record<string, number> = {};
-              for (const m of models) {
-                const sid: string = m?.id?._serialized ?? '';
-                const suffix = sid.includes('@') ? '@' + sid.split('@')[1] : 'unknown';
-                suffixCount[suffix] = (suffixCount[suffix] ?? 0) + 1;
+            // Read current models (sync or async depending on WA Web build)
+            let models: any[];
+            try {
+              const r = ChatCollection.getModels?.();
+              if (r && typeof (r as any).then === 'function') {
+                models = await Promise.race([r as Promise<any[]>, new Promise<any[]>((res) => setTimeout(() => res([]), 8000))]);
+              } else {
+                models = Array.isArray(r) && r.length > 0 ? r : (ChatCollection._models ?? []);
               }
+            } catch {
+              models = ChatCollection._models ?? [];
+            }
 
-              // Enumerate all callable methods on Chat (own + prototype chain)
-              const methods: string[] = [];
-              let proto = Chat;
-              while (proto && proto !== Object.prototype) {
-                for (const k of Object.getOwnPropertyNames(proto)) {
-                  if (k !== 'constructor' && typeof (Chat as any)[k] === 'function' && !methods.includes(k))
-                    methods.push(k);
+            const out: any[] = [];
+            for (const chat of models) {
+              const sid: string = chat.id?._serialized ?? '';
+              if (!sid || sid.endsWith('@broadcast')) continue;
+
+              let chatId = sid;
+              let resolvedFromLid = false;
+
+              if (sid.endsWith('@lid')) {
+                // Multi-device private chat — resolve @c.us WID from contact
+                const cSid: string = chat.contact?.id?._serialized ?? '';
+                if (cSid.endsWith('@c.us')) {
+                  chatId = cSid;
+                  resolvedFromLid = true;
+                } else {
+                  // Can't resolve phone WID — skip (can't message without it)
+                  continue;
                 }
-                proto = Object.getPrototypeOf(proto);
               }
 
-              return { ok: true, totalLen: models.length, suffixCount, methods: methods.slice(0, 40) };
-            }),
-            new Promise<{ ok: boolean; reason?: string }>((_, rej) =>
-              setTimeout(() => rej(new Error('pagination timeout')), 15_000),
-            ),
-          ]).catch((e) => ({ ok: false, reason: (e as Error)?.message }));
+              const lm = chat.lastMessage ?? chat.msgs?.last ?? null;
+              const name = chat.name || chat.formattedTitle ||
+                           chat.contact?.pushname || chat.contact?.name ||
+                           chat.contact?.notify || chat.id?.user || chatId;
 
-          logger.info({ accountId: acc.id, paginationResult }, 'conversations: pagination done');
-        }
-
-        // Now read all chats — Store is as full as WA Web will load.
-        const fetched = await Promise.race([
-          client.getChats(),
+              out.push({
+                chatId,
+                name,
+                unreadCount: chat.unreadCount ?? 0,
+                timestamp:   chat.t ?? chat.timestamp ?? 0,
+                isGroup:     !!chat.isGroup || sid.endsWith('@g.us'),
+                resolvedFromLid,
+                lastMessage: lm ? {
+                  body:      typeof lm.body === 'string' ? lm.body : '',
+                  timestamp: lm.t ?? lm.timestamp ?? 0,
+                  fromMe:    !!lm.id?.fromMe,
+                } : null,
+              });
+            }
+            return out;
+          }),
           new Promise<never>((_, rej) =>
-            setTimeout(() => rej(new Error('getChats timeout')), 20_000),
+            setTimeout(() => rej(new Error('conversations evaluate timeout')), 15_000),
           ),
         ]);
 
         let groupCount = 0;
         let privateCount = 0;
-        for (const chat of fetched) {
-          const sid: string = chat.id._serialized;
-          if (!sid || sid.endsWith('@lid') || sid.endsWith('@broadcast')) continue;
-          if (sid.endsWith('@g.us')) groupCount++;
-          else if (sid.endsWith('@c.us')) privateCount++;
-          const lm = (chat as any).lastMessage ?? null;
-          allChats.push({
-            accountId:    acc.id,
-            accountLabel: acc.label,
-            chatId:       sid,
-            name:         chat.name || (chat.id as any).user || sid,
-            unreadCount:  chat.unreadCount ?? 0,
-            timestamp:    chat.timestamp ?? 0,
-            isGroup:      chat.isGroup,
-            lastMessage:  lm
-              ? {
-                  body:      typeof lm.body === 'string' ? lm.body : '',
-                  timestamp: lm.timestamp ?? 0,
-                  fromMe:    !!lm.fromMe,
-                }
-              : null,
-          });
+        let lidResolved = 0;
+        for (const chat of rawChats) {
+          if (chat.isGroup) groupCount++;
+          else privateCount++;
+          if (chat.resolvedFromLid) lidResolved++;
+          allChats.push({ accountId: acc.id, accountLabel: acc.label, ...chat });
         }
-        logger.info({ accountId: acc.id, groupCount, privateCount, total: groupCount + privateCount }, 'conversations: loaded');
+        logger.info({ accountId: acc.id, groupCount, privateCount, lidResolved, total: rawChats.length }, 'conversations: loaded');
       } catch (err) {
         logger.warn({ accountId: acc.id, err: (err as Error)?.message }, 'conversations: skipping account');
       }
