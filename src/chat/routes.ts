@@ -279,6 +279,7 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
           for (const msg of models) {
             if (!msg?.id?._serialized) continue;
             try {
+              const qm = msg._data?.quotedMsg ?? null;
               result.push({
                 id: { _serialized: msg.id._serialized, fromMe: !!msg.id.fromMe },
                 body: msg.body ?? '',
@@ -288,6 +289,7 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
                 hasMedia: !!(msg.hasMedia || msg.clientUrl || msg.mediaData),
                 author: msg.author ?? undefined,
                 ack: msg.ack ?? 0,
+                quotedMsg: qm ? { body: qm.body ?? '', fromMe: !!qm.fromMe, author: qm.author ?? undefined } : undefined,
               });
             } catch { /* skip corrupt messages */ }
           }
@@ -390,17 +392,25 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
     res.json(
       messages
         .filter((m: any) => m.id?._serialized)
-        .map((m: any) => ({
-          id: m.id._serialized,
-          body: m.body,
-          fromMe: m.fromMe,
-          timestamp: m.timestamp,
-          type: m.type,
-          ack: m.ack,
-          author: m.author,
-          authorName: m.author ? nameMap[m.author as string] : undefined,
-          hasMedia: m.hasMedia || false,
-        })),
+        .map((m: any) => {
+          const qm = m._data?.quotedMsg ?? m.quotedMsg ?? null;
+          return {
+            id: m.id._serialized,
+            body: m.body,
+            fromMe: m.fromMe,
+            timestamp: m.timestamp,
+            type: m.type,
+            ack: m.ack,
+            author: m.author,
+            authorName: m.author ? nameMap[m.author as string] : undefined,
+            hasMedia: m.hasMedia || false,
+            quotedMsg: qm ? {
+              body: qm.body ?? '',
+              fromMe: !!qm.fromMe,
+              author: qm.author ?? qm.participant ?? undefined,
+            } : undefined,
+          };
+        }),
     );
   } catch (err) {
     next(err);
@@ -1042,7 +1052,11 @@ router.post('/:accountId/:chatId/send-voice', validate(sendVoiceSchema), async (
       return;
     }
 
-    const media = new MessageMedia(mimeType, data, 'voice.ogg');
+    // WhatsApp expects OGG/Opus for PTT. Chrome records as audio/webm;codecs=opus.
+    // Normalise to ogg so WA servers accept it as a voice note, not a file attachment.
+    const normalizedMime = mimeType.includes('webm') ? 'audio/ogg; codecs=opus' : mimeType;
+    const filename = normalizedMime.includes('webm') ? 'voice.webm' : 'voice.ogg';
+    const media = new MessageMedia(normalizedMime, data, filename);
     const msg = await client.sendMessage(chatId, media, { sendAudioAsVoice: true } as any);
 
     res.json({
