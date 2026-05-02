@@ -63,7 +63,39 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
               models = ChatCollection._models ?? [];
             }
 
+            // Diagnostic: dump the first @lid chat model to see available properties
+            const sampleLid = models.find((m: any) => (m.id?._serialized ?? '').endsWith('@lid'));
+            let lidDebug: any = null;
+            if (sampleLid) {
+              const safe = (v: any) => {
+                try {
+                  if (v === null || v === undefined) return v;
+                  if (typeof v === 'function') return '[fn]';
+                  if (typeof v !== 'object') return v;
+                  // shallow dump of object keys + primitive values
+                  const out: any = {};
+                  for (const k of Object.keys(v).slice(0, 30)) {
+                    const val = (v as any)[k];
+                    if (typeof val === 'function') out[k] = '[fn]';
+                    else if (typeof val === 'object' && val !== null) out[k] = '[object: ' + Object.keys(val).slice(0, 10).join(',') + ']';
+                    else out[k] = val;
+                  }
+                  return out;
+                } catch { return '[err]'; }
+              };
+              lidDebug = {
+                id: safe(sampleLid.id),
+                contact: safe(sampleLid.contact),
+                'contact.id': safe(sampleLid.contact?.id),
+                'contact.wid': safe(sampleLid.contact?.wid),
+                'contact.lid': safe(sampleLid.contact?.lid),
+                name: sampleLid.name,
+                formattedTitle: sampleLid.formattedTitle,
+                topKeys: Object.keys(sampleLid).slice(0, 30),
+              };
+            }
             const out: any[] = [];
+            if (lidDebug) (out as any).__lidDebug = lidDebug;
             for (const chat of models) {
               const sid: string = chat.id?._serialized ?? '';
               if (!sid || sid.endsWith('@broadcast')) continue;
@@ -72,13 +104,18 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
               let resolvedFromLid = false;
 
               if (sid.endsWith('@lid')) {
-                // Multi-device private chat — resolve @c.us WID from contact
-                const cSid: string = chat.contact?.id?._serialized ?? '';
-                if (cSid.endsWith('@c.us')) {
+                // Multi-device private chat — try several paths to get @c.us WID
+                const cands = [
+                  chat.contact?.wid?._serialized,
+                  chat.contact?.id?._serialized,
+                  chat.contact?.lid?._serialized,
+                  (chat as any).wid?._serialized,
+                ];
+                const cSid = cands.find((s: any) => typeof s === 'string' && s.endsWith('@c.us')) ?? '';
+                if (cSid) {
                   chatId = cSid;
                   resolvedFromLid = true;
                 } else {
-                  // Can't resolve phone WID — skip (can't message without it)
                   continue;
                 }
               }
@@ -109,10 +146,14 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
           ),
         ]);
 
+        const lidDebug = (rawChats as any).__lidDebug;
+        if (lidDebug) logger.info({ accountId: acc.id, lidDebug }, 'conversations: @lid model debug');
+
         let groupCount = 0;
         let privateCount = 0;
         let lidResolved = 0;
         for (const chat of rawChats) {
+          if ((chat as any).__lidDebug) continue; // skip debug sentinel
           if (chat.isGroup) groupCount++;
           else privateCount++;
           if (chat.resolvedFromLid) lidResolved++;
