@@ -28,20 +28,19 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
       try {
         const pupPage = (client as any).pupPage;
 
-        // Paginate WA Web's Store so private chats (older, buried under groups)
-        // get loaded into memory. This runs fully inside the browser context —
-        // no Node-side variables are referenced.
+        // Paginate WA Web's Chat collection so private chats (older, buried
+        // under groups) get loaded into memory before getChats() reads it.
+        // Uses window.require('WAWebCollections').Chat — the same module the
+        // library's own getChats() uses — to avoid the window.Store path which
+        // is not available in this WA Web version.
         if (pupPage) {
           const paginationResult = await Promise.race([
             pupPage.evaluate(async () => {
-              const S = (globalThis as any).Store;
-              if (!S?.Chat) return { ok: false, reason: 'no-store' };
+              const WC = (globalThis as any).window?.require?.('WAWebCollections') ?? (globalThis as any).require?.('WAWebCollections');
+              if (!WC?.Chat) return { ok: false, reason: 'no-WAWebCollections' };
 
-              const getLen = () =>
-                (S.Chat.getModels?.() instanceof Promise
-                  ? (S.Chat._models ?? S.Chat.models ?? [])
-                  : (S.Chat.getModels?.() ?? S.Chat._models ?? S.Chat.models ?? [])
-                ).length;
+              const Chat = WC.Chat;
+              const getLen = () => (Chat.getModelsArray?.() ?? Chat._models ?? []).length;
 
               let prevLen = 0;
               let pagesLoaded = 0;
@@ -53,12 +52,11 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
                 prevLen = curLen;
 
                 const fns: Array<() => any> = [
-                  () => S.Chat.loadMore?.(),
-                  () => S.Chat.fetchMore?.(),
-                  () => S.Chat.fetchPage?.(),
-                  () => S.Chat.loadAll?.(),
-                  () => S.ConversationList?.loadMore?.(),
-                  () => S.ChatCollection?.loadMore?.(),
+                  () => Chat.loadMore?.(),
+                  () => Chat.fetchMore?.(),
+                  () => Chat.fetchPage?.(),
+                  () => Chat.loadAll?.(),
+                  () => WC.ConversationList?.loadMore?.(),
                 ];
 
                 let grew = false;
@@ -68,7 +66,7 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
                     if (r && typeof r.then === 'function') {
                       await Promise.race([r, new Promise((_, rej) => setTimeout(() => rej(new Error('t')), 2500))]);
                     }
-                    await new Promise((r) => setTimeout(r, 300));
+                    await new Promise((r) => setTimeout(r, 400));
                     if (getLen() > prevLen) { grew = true; break; }
                   } catch { /* next */ }
                 }
