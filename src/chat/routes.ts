@@ -50,43 +50,10 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
             }
             if (!ChatCollection) return [];
 
-            // getModelsArray() returns the raw unfiltered model array — this is
-            // what surfaced @lid chats in diagnostics. getModels() filtered them.
+            // getModelsArray() returns the raw unfiltered model array including @lid.
             const models: any[] = ChatCollection.getModelsArray?.() ?? ChatCollection._models ?? [];
 
-            // Diagnostic: dump the first @lid chat model to see available properties
-            const sampleLid = models.find((m: any) => (m.id?._serialized ?? '').endsWith('@lid'));
-            let lidDebug: any = null;
-            if (sampleLid) {
-              const safe = (v: any) => {
-                try {
-                  if (v === null || v === undefined) return v;
-                  if (typeof v === 'function') return '[fn]';
-                  if (typeof v !== 'object') return v;
-                  // shallow dump of object keys + primitive values
-                  const out: any = {};
-                  for (const k of Object.keys(v).slice(0, 30)) {
-                    const val = (v as any)[k];
-                    if (typeof val === 'function') out[k] = '[fn]';
-                    else if (typeof val === 'object' && val !== null) out[k] = '[object: ' + Object.keys(val).slice(0, 10).join(',') + ']';
-                    else out[k] = val;
-                  }
-                  return out;
-                } catch { return '[err]'; }
-              };
-              lidDebug = {
-                id: safe(sampleLid.id),
-                contact: safe(sampleLid.contact),
-                'contact.id': safe(sampleLid.contact?.id),
-                'contact.wid': safe(sampleLid.contact?.wid),
-                'contact.lid': safe(sampleLid.contact?.lid),
-                name: sampleLid.name,
-                formattedTitle: sampleLid.formattedTitle,
-                topKeys: Object.keys(sampleLid).slice(0, 30),
-              };
-            }
             const out: any[] = [];
-            if (lidDebug) (out as any).__lidDebug = lidDebug;
             for (const chat of models) {
               const sid: string = chat.id?._serialized ?? '';
               if (!sid || sid.endsWith('@broadcast')) continue;
@@ -137,14 +104,10 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
           ),
         ]);
 
-        const lidDebug = (rawChats as any).__lidDebug;
-        if (lidDebug) logger.info({ accountId: acc.id, lidDebug }, 'conversations: @lid model debug');
-
         let groupCount = 0;
         let privateCount = 0;
         let lidResolved = 0;
         for (const chat of rawChats) {
-          if ((chat as any).__lidDebug) continue; // skip debug sentinel
           if (chat.isGroup) groupCount++;
           else privateCount++;
           if (chat.resolvedFromLid) lidResolved++;
@@ -1226,6 +1189,84 @@ router.get('/:accountId/:chatId/messages/debug', async (req: Request, res: Respo
       results.storeInfo = { error: (e as Error)?.message };
     }
 
+    res.json(results);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Temporary: inspect @lid chat model structure ──────────────────────────
+// Usage (from inside the container):
+//   curl -s "http://localhost:3001/api/chat/debug/lid-structure?secret=lid123" | jq .
+// Remove this endpoint once @lid resolution is working.
+router.get('/debug/lid-structure', async (req: Request, res: Response, next: NextFunction) => {
+  if (req.query.secret !== 'lid123') { res.status(403).json({ error: 'forbidden' }); return; }
+  try {
+    const manager = ClientManager.getInstance();
+    const results: any[] = [];
+    const accounts = manager.getAllInstances();
+    for (const instance of accounts) {
+      if (instance.status !== 'AUTHENTICATED') continue;
+      const client = instance.getClient();
+      if (!client) continue;
+      const pupPage = (client as any).pupPage;
+      if (!pupPage) continue;
+
+      const dump = await pupPage.evaluate(() => {
+        const g = globalThis as any;
+        let ChatCol: any;
+        try { ChatCol = g.window.require('WAWebCollections').Chat; } catch { ChatCol = null; }
+        const S = g.window?.Store ?? g.Store;
+
+        const allSources: Record<string, any[]> = {
+          'WAWebCollections.getModelsArray': (() => { try { return ChatCol?.getModelsArray?.() ?? []; } catch { return []; } })(),
+          'WAWebCollections._models':        (() => { try { return ChatCol?._models ?? []; } catch { return []; } })(),
+          'Store.Chat._models':              (() => { try { return S?.Chat?._models ?? []; } catch { return []; } })(),
+          'Store.Chat.models':               (() => { try { return S?.Chat?.models ?? []; } catch { return []; } })(),
+        };
+
+        const out: any = { sources: {} };
+        for (const [src, models] of Object.entries(allSources)) {
+          const lids = (models as any[]).filter((m: any) => (m?.id?._serialized ?? '').endsWith('@lid'));
+          out.sources[src] = { total: (models as any[]).length, lidCount: lids.length };
+        }
+
+        // Pick first @lid from whichever source has some
+        const allModels = allSources['WAWebCollections.getModelsArray'].length
+          ? allSources['WAWebCollections.getModelsArray']
+          : allSources['Store.Chat._models'];
+
+        const sampleLid = (allModels as any[]).find((m: any) => (m?.id?._serialized ?? '').endsWith('@lid'));
+        if (sampleLid) {
+          const peek = (v: any, depth = 0): any => {
+            if (v === null || v === undefined) return v;
+            if (typeof v !== 'object') return v;
+            if (depth > 1) return `[object keys:${Object.keys(v).slice(0,8).join(',')}]`;
+            const r: any = {};
+            for (const k of Object.keys(v).slice(0, 20)) {
+              try { r[k] = peek((v as any)[k], depth + 1); } catch { r[k] = '[err]'; }
+            }
+            return r;
+          };
+          out.sampleLid = {
+            'id':              peek(sampleLid.id),
+            'contact':         peek(sampleLid.contact),
+            'contact.id':      peek(sampleLid.contact?.id),
+            'contact.wid':     peek(sampleLid.contact?.wid),
+            'contact.lid':     peek(sampleLid.contact?.lid),
+            'contact.type':    sampleLid.contact?.type,
+            'name':            sampleLid.name,
+            'formattedTitle':  sampleLid.formattedTitle,
+            'topKeys':         Object.keys(sampleLid).slice(0, 40),
+          };
+        } else {
+          out.sampleLid = null;
+        }
+        return out;
+      });
+
+      results.push({ accountId: instance.id, ...dump });
+    }
     res.json(results);
   } catch (err) {
     next(err);
