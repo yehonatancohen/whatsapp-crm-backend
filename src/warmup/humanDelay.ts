@@ -15,6 +15,7 @@
  */
 
 import { Client } from 'whatsapp-web.js';
+import { logger } from '../shared/logger';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -49,16 +50,23 @@ function sleep(ms: number): Promise<void> {
 export async function preFetchLinkPreview(client: Client, text: string): Promise<void> {
     try {
         const page = (client as any).pupPage;
-        if (!page) return;
+        if (!page) {
+            logger.warn({ textLen: text.length }, 'preFetchLinkPreview: no pupPage');
+            return;
+        }
 
-        await Promise.race([
+        const result = await Promise.race([
             page.evaluate(async (messageText: string) => {
+                const out: { status: string; url?: string; pathTried?: string[]; error?: string } = {
+                    status: 'unknown',
+                };
                 try {
                     const store = (globalThis as any).Store;
-                    if (!store) return;
+                    if (!store) {
+                        out.status = 'no-store';
+                        return out;
+                    }
 
-                    // ── Step 1: extract URL ─────────────────────────────
-                    // Try WA's own link finder first; fall back to plain regex.
                     let link: string | null = null;
                     if (typeof store?.Validators?.findLink === 'function') {
                         link = store.Validators.findLink(messageText) ?? null;
@@ -69,34 +77,48 @@ export async function preFetchLinkPreview(client: Client, text: string): Promise
                         const m = messageText.match(/https?:\/\/[^\s<>"{}|\\^`[\]]+/);
                         link = m ? m[0] : null;
                     }
-                    if (!link) return;
-
-                    // ── Step 2: pre-fetch via WA's link preview Store ───
-                    // WA Web has moved this API across several namespaces over time;
-                    // try every known path until one resolves.
-                    const previewFns = [
-                        store?.LinkPreview?.getLinkPreview?.bind(store.LinkPreview),
-                        store?.LinkPreviewStore?.getLinkPreview?.bind(store.LinkPreviewStore),
-                        store?.Preview?.getLinkPreview?.bind(store.Preview),
-                        store?.OGPreview?.getLinkPreview?.bind(store.OGPreview),
-                        // Some builds expose it directly on the Store root
-                        typeof store?.getLinkPreview === 'function' ? store.getLinkPreview.bind(store) : undefined,
-                    ].filter(Boolean);
-
-                    for (const fn of previewFns) {
-                        try {
-                            await (fn as Function)(link);
-                            break; // first one that resolves wins
-                        } catch { /* try next */ }
+                    if (!link) {
+                        out.status = 'no-url-found';
+                        return out;
                     }
-                } catch {
-                    // Non-fatal — sendMessage will attempt its own preview fetch
+                    out.url = link;
+
+                    const candidates: Array<[string, Function | undefined]> = [
+                        ['Store.LinkPreview.getLinkPreview', store?.LinkPreview?.getLinkPreview?.bind(store.LinkPreview)],
+                        ['Store.LinkPreviewStore.getLinkPreview', store?.LinkPreviewStore?.getLinkPreview?.bind(store.LinkPreviewStore)],
+                        ['Store.Preview.getLinkPreview', store?.Preview?.getLinkPreview?.bind(store.Preview)],
+                        ['Store.OGPreview.getLinkPreview', store?.OGPreview?.getLinkPreview?.bind(store.OGPreview)],
+                        ['Store.getLinkPreview', typeof store?.getLinkPreview === 'function' ? store.getLinkPreview.bind(store) : undefined],
+                    ];
+
+                    out.pathTried = [];
+                    for (const [name, fn] of candidates) {
+                        if (!fn) continue;
+                        out.pathTried.push(name);
+                        try {
+                            const r = await (fn as Function)(link);
+                            out.status = `fetched-via:${name}`;
+                            (out as any).hasResult = !!r;
+                            return out;
+                        } catch (e: any) {
+                            (out as any)[`err:${name}`] = e?.message || String(e);
+                        }
+                    }
+
+                    out.status = 'no-store-path-available';
+                    return out;
+                } catch (e: any) {
+                    out.status = 'evaluate-threw';
+                    out.error = e?.message || String(e);
+                    return out;
                 }
             }, text),
-            sleep(10_000), // Hard cap: don't block the send more than 10 s
+            sleep(10_000).then(() => ({ status: 'timeout-10s' })),
         ]);
-    } catch {
-        // Non-fatal
+
+        logger.info({ result, textPreview: text.slice(0, 80) }, 'preFetchLinkPreview: status');
+    } catch (err) {
+        logger.warn({ err: (err as Error)?.message }, 'preFetchLinkPreview: outer error');
     }
 }
 

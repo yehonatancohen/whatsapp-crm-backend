@@ -14,10 +14,8 @@ router.use(authenticate);
 router.get('/conversations', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const manager = ClientManager.getInstance();
-    // Get all accounts for user to check ownership
     const accounts = await manager.getAllAccounts(req.user!.userId, false);
 
-    // For each authenticated account, fetch chats
     const allChats = [];
 
     for (const acc of accounts) {
@@ -28,169 +26,47 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
       if (!client) continue;
 
       try {
-        const pupPage = (client as any).pupPage;
-        if (!pupPage) continue;
-
-        // Read all chats from WA Web's Store with several fallback strategies.
-        //
-        // The core problem: Store.Chat.models only contains the chats WA Web
-        // has paged into memory.  On campaign-heavy accounts the first page is
-        // all groups; private chats (less recently messaged) sit on later pages
-        // that haven't been fetched yet.
-        //
-        // Strategy:
-        //  1. Await getModels() — async in WA Web ≥ some version, may fetch all
-        //  2. If still no private chats, try Store pagination (loadMore / fetchPage)
-        //  3. Sync _models / models fallback for old WA Web builds
-        const rawChats: any[] = await Promise.race([
-          pupPage.evaluate(async () => {
-          const S = (globalThis as any).Store;
-          if (!S?.Chat) return [];
-
-          // Helper: read whatever the Store currently has in memory
-          const readModels = async (): Promise<any[]> => {
-            try {
-              const r = S.Chat.getModels?.();
-              if (r && typeof (r as any).then === 'function') {
-                return (await Promise.race([
-                  r as Promise<any[]>,
-                  new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 8000)),
-                ])) ?? [];
-              }
-              if (Array.isArray(r) && r.length > 0) return r;
-            } catch (_e) { /* fall through */ }
-            return Array.isArray(S.Chat._models) ? S.Chat._models
-                 : Array.isArray(S.Chat.models)  ? S.Chat.models
-                 : [];
-          };
-
-          let models = await readModels();
-          logger.info({ accountId: acc.id, initialModels: models.length }, 'Pagination debug: start');
-
-          // WhatsApp Web often paginates the chat list. Load more pages so we get
-          // a good history (including private chats that might be buried under groups).
-          let prevLen = 0;
-          for (let i = 0; i < 10; i++) {
-            if (models.length >= 800) break; // enough history
-            if (i > 0 && models.length === prevLen) break; // stopped growing
-            prevLen = models.length;
-
-            const paginationAttempts: Array<() => any> = [
-              () => S.Chat.loadMore?.(),
-              () => S.Chat.fetchMore?.(),
-              () => S.Chat.fetchPage?.(),
-              () => S.Chat.loadAll?.(),
-              () => S.ConversationList?.loadMore?.(),
-              () => S.ChatCollection?.loadMore?.(),
-            ];
-
-            let success = false;
-            for (const attempt of paginationAttempts) {
-              try {
-                const result = attempt();
-                if (result && typeof (result as any).then === 'function') {
-                  await Promise.race([
-                    result,
-                    new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500)),
-                  ]);
-                }
-                await new Promise((r) => setTimeout(r, 300));
-                models = await readModels();
-                if (models.length > prevLen) {
-                  logger.info({ accountId: acc.id, attemptIdx: paginationAttempts.indexOf(attempt), oldLen: prevLen, newLen: models.length }, 'Pagination debug: successful load');
-                  success = true;
-                  break; // attempt worked, move to next page
-                }
-              } catch (_e) { /* try next fallback */ }
-            }
-            if (!success) {
-              logger.info({ accountId: acc.id, loopIdx: i }, 'Pagination debug: no more pages');
-              break; // no more pages available
-            }
-          }
-          
-          const priv = models.filter((m: any) => (m.id?._serialized ?? '').endsWith('@c.us')).length;
-          logger.info({ accountId: acc.id, finalModels: models.length, privateChats: priv }, 'Pagination debug: end');
-
-          const out: any[] = [];
-          for (const chat of models) {
-            const sid: string = chat.id?._serialized ?? '';
-            if (!sid || sid.endsWith('@lid') || sid.endsWith('@broadcast')) continue;
-            const lm = chat.lastMessage ?? chat.msgs?.last ?? null;
-            out.push({
-              chatId:      sid,
-              name:        chat.name || chat.id?.user || sid,
-              unreadCount: chat.unreadCount ?? 0,
-              timestamp:   chat.t ?? chat.timestamp ?? 0,
-              isGroup:     !!chat.isGroup || sid.endsWith('@g.us'),
-              lastMessage: lm
-                ? {
-                    body:      typeof lm.body === 'string' ? lm.body : '',
-                    timestamp: lm.t ?? lm.timestamp ?? 0,
-                    fromMe:    !!lm.id?.fromMe,
-                  }
-                : null,
-            });
-          }
-          return out;
-          }),
-          new Promise<any[]>((_, reject) =>
-            setTimeout(() => reject(new Error('conversations evaluate timeout')), 10_000),
+        // Authoritative: returns all chats (groups + private). Wrapped in a
+        // timeout so a stalled WA Web session can't block the entire response.
+        const fetched = await Promise.race([
+          client.getChats(),
+          new Promise<never>((_, rej) =>
+            setTimeout(() => rej(new Error('getChats timeout')), 20_000),
           ),
         ]);
 
-        // Node.js-side fallback: if the Store still has no private chats, call
-        // client.getChats() which is authoritative but serialises full objects.
-        // We merge it with rawChats so groups already found are not re-fetched.
-        const hasPrivateChats = rawChats.some((c: any) => (c.chatId as string).endsWith('@c.us'));
-        if (!hasPrivateChats) {
-          logger.debug({ accountId: acc.id }, 'conversations: no private chats from Store, falling back to getChats()');
-          try {
-            const existingIds = new Set(rawChats.map((c: any) => c.chatId));
-            const fetched = await Promise.race([
-              client.getChats(),
-              new Promise<never>((_, rej) => setTimeout(() => rej(new Error('getChats timeout')), 20_000)),
-            ]);
-            for (const chat of fetched) {
-              const sid: string = chat.id._serialized;
-              if (!sid || sid.endsWith('@lid') || sid.endsWith('@broadcast')) continue;
-              if (existingIds.has(sid)) continue;
-              const lm = (chat as any).lastMessage ?? null;
-              rawChats.push({
-                chatId:      sid,
-                name:        chat.name || (chat.id as any).user || sid,
-                unreadCount: chat.unreadCount ?? 0,
-                timestamp:   chat.timestamp ?? 0,
-                isGroup:     chat.isGroup,
-                lastMessage: lm
-                  ? {
-                      body:      typeof lm.body === 'string' ? lm.body : '',
-                      timestamp: lm.timestamp ?? 0,
-                      fromMe:    !!lm.fromMe,
-                    }
-                  : null,
-              });
-            }
-          } catch (fbErr) {
-            logger.debug({ accountId: acc.id, err: (fbErr as Error)?.message }, 'conversations: getChats() fallback failed');
-          }
-        }
-
-        for (const chat of rawChats) {
+        let groupCount = 0;
+        let privateCount = 0;
+        for (const chat of fetched) {
+          const sid: string = chat.id._serialized;
+          if (!sid || sid.endsWith('@lid') || sid.endsWith('@broadcast')) continue;
+          if (sid.endsWith('@g.us')) groupCount++;
+          else if (sid.endsWith('@c.us')) privateCount++;
+          const lm = (chat as any).lastMessage ?? null;
           allChats.push({
             accountId:    acc.id,
             accountLabel: acc.label,
-            ...chat,
+            chatId:       sid,
+            name:         chat.name || (chat.id as any).user || sid,
+            unreadCount:  chat.unreadCount ?? 0,
+            timestamp:    chat.timestamp ?? 0,
+            isGroup:      chat.isGroup,
+            lastMessage:  lm
+              ? {
+                  body:      typeof lm.body === 'string' ? lm.body : '',
+                  timestamp: lm.timestamp ?? 0,
+                  fromMe:    !!lm.fromMe,
+                }
+              : null,
           });
         }
+        logger.info({ accountId: acc.id, groupCount, privateCount, total: groupCount + privateCount }, 'conversations: loaded');
       } catch (err) {
-        logger.debug({ accountId: acc.id, err: (err as Error)?.message }, 'conversations: skipping account');
+        logger.warn({ accountId: acc.id, err: (err as Error)?.message }, 'conversations: skipping account');
       }
     }
 
-    // Sort by timestamp desc
     allChats.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-
     res.json(allChats);
   } catch (err) {
     next(err);
@@ -583,6 +459,15 @@ router.post('/:accountId/:chatId/send', validate(sendSchema), async (req: Reques
       ack: msg.ack
     });
   } catch (err) {
+    logger.error({
+      route: 'send',
+      accountId: req.params.accountId,
+      chatId: req.params.chatId,
+      bodyLen: req.body?.body?.length,
+      quotedMessageId: req.body?.quotedMessageId,
+      err: (err as Error)?.message,
+      stack: (err as Error)?.stack,
+    }, 'send: text message failed');
     next(err);
   }
 });
@@ -1033,6 +918,16 @@ router.post('/:accountId/:chatId/send-image', validate(sendImageSchema), async (
       hasMedia: true,
     });
   } catch (err) {
+    logger.error({
+      route: 'send-image',
+      accountId: req.params.accountId,
+      chatId: req.params.chatId,
+      mimeType: req.body?.mimeType,
+      dataLen: req.body?.data?.length,
+      hasCaption: !!req.body?.caption,
+      err: (err as Error)?.message,
+      stack: (err as Error)?.stack,
+    }, 'send: image failed');
     next(err);
   }
 });
@@ -1103,6 +998,15 @@ router.post('/:accountId/:chatId/send-voice', validate(sendVoiceSchema), async (
       hasMedia: true,
     });
   } catch (err) {
+    logger.error({
+      route: 'send-voice',
+      accountId: req.params.accountId,
+      chatId: req.params.chatId,
+      mimeType: req.body?.mimeType,
+      dataLen: req.body?.data?.length,
+      err: (err as Error)?.message,
+      stack: (err as Error)?.stack,
+    }, 'send: voice failed');
     next(err);
   }
 });
