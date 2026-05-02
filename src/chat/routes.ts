@@ -26,8 +26,67 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
       if (!client) continue;
 
       try {
-        // Authoritative: returns all chats (groups + private). Wrapped in a
-        // timeout so a stalled WA Web session can't block the entire response.
+        const pupPage = (client as any).pupPage;
+
+        // Paginate WA Web's Store so private chats (older, buried under groups)
+        // get loaded into memory. This runs fully inside the browser context —
+        // no Node-side variables are referenced.
+        if (pupPage) {
+          const paginationResult = await Promise.race([
+            pupPage.evaluate(async () => {
+              const S = (globalThis as any).Store;
+              if (!S?.Chat) return { ok: false, reason: 'no-store' };
+
+              const getLen = () =>
+                (S.Chat.getModels?.() instanceof Promise
+                  ? (S.Chat._models ?? S.Chat.models ?? [])
+                  : (S.Chat.getModels?.() ?? S.Chat._models ?? S.Chat.models ?? [])
+                ).length;
+
+              let prevLen = 0;
+              let pagesLoaded = 0;
+
+              for (let i = 0; i < 10; i++) {
+                const curLen = getLen();
+                if (curLen >= 800) break;
+                if (i > 0 && curLen === prevLen) break;
+                prevLen = curLen;
+
+                const fns: Array<() => any> = [
+                  () => S.Chat.loadMore?.(),
+                  () => S.Chat.fetchMore?.(),
+                  () => S.Chat.fetchPage?.(),
+                  () => S.Chat.loadAll?.(),
+                  () => S.ConversationList?.loadMore?.(),
+                  () => S.ChatCollection?.loadMore?.(),
+                ];
+
+                let grew = false;
+                for (const fn of fns) {
+                  try {
+                    const r = fn();
+                    if (r && typeof r.then === 'function') {
+                      await Promise.race([r, new Promise((_, rej) => setTimeout(() => rej(new Error('t')), 2500))]);
+                    }
+                    await new Promise((r) => setTimeout(r, 300));
+                    if (getLen() > prevLen) { grew = true; break; }
+                  } catch { /* next */ }
+                }
+                if (!grew) break;
+                pagesLoaded++;
+              }
+
+              return { ok: true, pagesLoaded, finalLen: getLen() };
+            }),
+            new Promise<{ ok: boolean; reason?: string }>((_, rej) =>
+              setTimeout(() => rej(new Error('pagination timeout')), 15_000),
+            ),
+          ]).catch((e) => ({ ok: false, reason: (e as Error)?.message }));
+
+          logger.info({ accountId: acc.id, paginationResult }, 'conversations: pagination done');
+        }
+
+        // Now read all chats — Store is as full as WA Web will load.
         const fetched = await Promise.race([
           client.getChats(),
           new Promise<never>((_, rej) =>
