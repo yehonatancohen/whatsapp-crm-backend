@@ -28,53 +28,51 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
       try {
         const pupPage = (client as any).pupPage;
 
-        // Paginate WA Web's Chat collection so private chats (older, buried
-        // under groups) get loaded into memory before getChats() reads it.
-        // Uses window.require('WAWebCollections').Chat — the same module the
-        // library's own getChats() uses — to avoid the window.Store path which
-        // is not available in this WA Web version.
+        // Scroll the WA Web chat list pane to trigger its virtual-list loader.
+        // WA Web only loads chats as the user scrolls — this mimics that scroll
+        // so private chats (less recent than campaign groups) get loaded.
         if (pupPage) {
           const paginationResult = await Promise.race([
-            pupPage.evaluate(async () => {
-              const WC = (globalThis as any).window?.require?.('WAWebCollections') ?? (globalThis as any).require?.('WAWebCollections');
-              if (!WC?.Chat) return { ok: false, reason: 'no-WAWebCollections' };
+            pupPage.evaluate(() => {
+              const g = globalThis as any;
+              const getLen = (): number => {
+                try { return (g.window.require('WAWebCollections').Chat.getModelsArray?.() ?? []).length; }
+                catch { return 0; }
+              };
 
-              const Chat = WC.Chat;
-              const getLen = () => (Chat.getModelsArray?.() ?? Chat._models ?? []).length;
+              // #pane-side is WhatsApp Web's chat-list container.
+              const pane: any = g.document.querySelector('#pane-side') ??
+                g.document.querySelector('[data-testid="chat-list"]')?.parentElement;
+              if (!pane) return Promise.resolve({ ok: false, reason: 'no-pane-side' });
 
-              let prevLen = 0;
-              let pagesLoaded = 0;
-
-              for (let i = 0; i < 10; i++) {
-                const curLen = getLen();
-                if (curLen >= 800) break;
-                if (i > 0 && curLen === prevLen) break;
-                prevLen = curLen;
-
-                const fns: Array<() => any> = [
-                  () => Chat.loadMore?.(),
-                  () => Chat.fetchMore?.(),
-                  () => Chat.fetchPage?.(),
-                  () => Chat.loadAll?.(),
-                  () => WC.ConversationList?.loadMore?.(),
-                ];
-
-                let grew = false;
-                for (const fn of fns) {
-                  try {
-                    const r = fn();
-                    if (r && typeof r.then === 'function') {
-                      await Promise.race([r, new Promise((_, rej) => setTimeout(() => rej(new Error('t')), 2500))]);
-                    }
-                    await new Promise((r) => setTimeout(r, 400));
-                    if (getLen() > prevLen) { grew = true; break; }
-                  } catch { /* next */ }
+              // Find the actual scrollable child inside #pane-side.
+              const findScrollable = (root: any): any => {
+                if (root.scrollHeight > root.clientHeight + 10) return root;
+                for (const child of Array.from(root.children as any)) {
+                  const el = child as any;
+                  if (el.scrollHeight > el.clientHeight + 10) return el;
                 }
-                if (!grew) break;
-                pagesLoaded++;
-              }
+                return root;
+              };
+              const scrollEl = findScrollable(pane);
 
-              return { ok: true, pagesLoaded, finalLen: getLen() };
+              let pagesLoaded = 0;
+              let prevLen = getLen();
+
+              const iterate = async (): Promise<{ ok: boolean; pagesLoaded: number; finalLen: number }> => {
+                for (let i = 0; i < 8; i++) {
+                  scrollEl.scrollTop = scrollEl.scrollHeight;
+                  await new Promise((r: any) => setTimeout(r, 1200));
+                  const curLen = getLen();
+                  if (curLen > prevLen) { pagesLoaded++; prevLen = curLen; }
+                  else break;
+                  if (curLen >= 800) break;
+                }
+                scrollEl.scrollTop = 0;
+                return { ok: true, pagesLoaded, finalLen: getLen() };
+              };
+
+              return iterate();
             }),
             new Promise<{ ok: boolean; reason?: string }>((_, rej) =>
               setTimeout(() => rej(new Error('pagination timeout')), 15_000),
@@ -1052,11 +1050,10 @@ router.post('/:accountId/:chatId/send-voice', validate(sendVoiceSchema), async (
       return;
     }
 
-    // WhatsApp expects OGG/Opus for PTT. Chrome records as audio/webm;codecs=opus.
-    // Normalise to ogg so WA servers accept it as a voice note, not a file attachment.
-    const normalizedMime = mimeType.includes('webm') ? 'audio/ogg; codecs=opus' : mimeType;
-    const filename = normalizedMime.includes('webm') ? 'voice.webm' : 'voice.ogg';
-    const media = new MessageMedia(normalizedMime, data, filename);
+    // Use the filename extension that matches the actual container format.
+    // Chrome records as audio/webm;codecs=opus — WA Web handles it natively.
+    const filename = mimeType.includes('webm') ? 'voice.webm' : 'voice.ogg';
+    const media = new MessageMedia(mimeType, data, filename);
     const msg = await client.sendMessage(chatId, media, { sendAudioAsVoice: true } as any);
 
     res.json({
