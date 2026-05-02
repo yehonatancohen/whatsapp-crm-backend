@@ -20,6 +20,12 @@ export async function launchStealthBrowser(proxy?: string, userDataDir?: string)
     '--no-first-run',
     '--no-zygote',
     '--disable-gpu',
+    // Required for WA Web's AudioContext (PTT waveform generation) to work
+    // in headless Chrome — without these the audio subsystem is unavailable
+    // and decodeAudioData times out with a minified 't: t' error.
+    '--use-fake-audio-capture',
+    '--use-fake-device-for-media-stream',
+    '--autoplay-policy=no-user-gesture-required',
   ];
 
   if (proxy) {

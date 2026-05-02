@@ -33,46 +33,34 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
         // so private chats (less recent than campaign groups) get loaded.
         if (pupPage) {
           const paginationResult = await Promise.race([
-            pupPage.evaluate(() => {
+            pupPage.evaluate(async () => {
               const g = globalThis as any;
-              const getLen = (): number => {
-                try { return (g.window.require('WAWebCollections').Chat.getModelsArray?.() ?? []).length; }
-                catch { return 0; }
-              };
+              let Chat: any;
+              try { Chat = g.window.require('WAWebCollections').Chat; }
+              catch { return { ok: false, reason: 'no-WAWebCollections' }; }
 
-              // #pane-side is WhatsApp Web's chat-list container.
-              const pane: any = g.document.querySelector('#pane-side') ??
-                g.document.querySelector('[data-testid="chat-list"]')?.parentElement;
-              if (!pane) return Promise.resolve({ ok: false, reason: 'no-pane-side' });
+              const models: any[] = Chat.getModelsArray?.() ?? Chat._models ?? [];
 
-              // Find the actual scrollable child inside #pane-side.
-              const findScrollable = (root: any): any => {
-                if (root.scrollHeight > root.clientHeight + 10) return root;
-                for (const child of Array.from(root.children as any)) {
-                  const el = child as any;
-                  if (el.scrollHeight > el.clientHeight + 10) return el;
+              // Tally WID suffixes so we can see what types are in the collection
+              const suffixCount: Record<string, number> = {};
+              for (const m of models) {
+                const sid: string = m?.id?._serialized ?? '';
+                const suffix = sid.includes('@') ? '@' + sid.split('@')[1] : 'unknown';
+                suffixCount[suffix] = (suffixCount[suffix] ?? 0) + 1;
+              }
+
+              // Enumerate all callable methods on Chat (own + prototype chain)
+              const methods: string[] = [];
+              let proto = Chat;
+              while (proto && proto !== Object.prototype) {
+                for (const k of Object.getOwnPropertyNames(proto)) {
+                  if (k !== 'constructor' && typeof (Chat as any)[k] === 'function' && !methods.includes(k))
+                    methods.push(k);
                 }
-                return root;
-              };
-              const scrollEl = findScrollable(pane);
+                proto = Object.getPrototypeOf(proto);
+              }
 
-              let pagesLoaded = 0;
-              let prevLen = getLen();
-
-              const iterate = async (): Promise<{ ok: boolean; pagesLoaded: number; finalLen: number }> => {
-                for (let i = 0; i < 8; i++) {
-                  scrollEl.scrollTop = scrollEl.scrollHeight;
-                  await new Promise((r: any) => setTimeout(r, 1200));
-                  const curLen = getLen();
-                  if (curLen > prevLen) { pagesLoaded++; prevLen = curLen; }
-                  else break;
-                  if (curLen >= 800) break;
-                }
-                scrollEl.scrollTop = 0;
-                return { ok: true, pagesLoaded, finalLen: getLen() };
-              };
-
-              return iterate();
+              return { ok: true, totalLen: models.length, suffixCount, methods: methods.slice(0, 40) };
             }),
             new Promise<{ ok: boolean; reason?: string }>((_, rej) =>
               setTimeout(() => rej(new Error('pagination timeout')), 15_000),
