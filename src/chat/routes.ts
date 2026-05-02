@@ -50,18 +50,9 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
             }
             if (!ChatCollection) return [];
 
-            // Read current models (sync or async depending on WA Web build)
-            let models: any[];
-            try {
-              const r = ChatCollection.getModels?.();
-              if (r && typeof (r as any).then === 'function') {
-                models = await Promise.race([r as Promise<any[]>, new Promise<any[]>((res) => setTimeout(() => res([]), 8000))]);
-              } else {
-                models = Array.isArray(r) && r.length > 0 ? r : (ChatCollection._models ?? []);
-              }
-            } catch {
-              models = ChatCollection._models ?? [];
-            }
+            // getModelsArray() returns the raw unfiltered model array — this is
+            // what surfaced @lid chats in diagnostics. getModels() filtered them.
+            const models: any[] = ChatCollection.getModelsArray?.() ?? ChatCollection._models ?? [];
 
             // Diagnostic: dump the first @lid chat model to see available properties
             const sampleLid = models.find((m: any) => (m.id?._serialized ?? '').endsWith('@lid'));
