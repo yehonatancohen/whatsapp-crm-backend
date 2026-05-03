@@ -73,8 +73,6 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
                 if (cSid) {
                   chatId = cSid;
                   resolvedFromLid = true;
-                } else {
-                  continue;
                 }
               }
 
@@ -145,30 +143,25 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
       return;
     }
 
-    // @lid (Linked Identity) chats are a multi-device WhatsApp feature
-    // not supported by whatsapp-web.js — it throws on fetchMessages.
-    if (chatId.endsWith('@lid')) {
-      res.status(501).json({ error: 'צ\'אט מסוג Linked Identity (@lid) אינו נתמך כרגע' });
-      return;
-    }
-
-    let chat;
-    try {
-      // getChatById can throw for some chat types; fall back to scanning getChats()
-      chat = await client.getChatById(chatId);
-    } catch {
+    let chat = null;
+    if (!chatId.endsWith('@lid')) {
       try {
-        const chats = await client.getChats();
-        chat = chats.find(c => c.id._serialized === chatId) ?? null;
-      } catch (err) {
-        logger.warn({ err, chatId }, 'Failed to look up chat');
-        res.status(502).json({ error: 'לא ניתן לטעון את הצ\'אט. ייתכן שהחשבון אינו מסונכרן.' });
+        // getChatById can throw for some chat types; fall back to scanning getChats()
+        chat = await client.getChatById(chatId);
+      } catch {
+        try {
+          const chats = await client.getChats();
+          chat = chats.find(c => c.id._serialized === chatId) ?? null;
+        } catch (err) {
+          logger.warn({ err, chatId }, 'Failed to look up chat');
+          res.status(502).json({ error: 'לא ניתן לטעון את הצ\'אט. ייתכן שהחשבון אינו מסונכרן.' });
+          return;
+        }
+      }
+      if (!chat) {
+        res.status(404).json({ error: 'הצ\'אט לא נמצא' });
         return;
       }
-    }
-    if (!chat) {
-      res.status(404).json({ error: 'הצ\'אט לא נמצא' });
-      return;
     }
 
     // ─── Multi-layer message fetching strategy ─────────────────────────
@@ -199,6 +192,7 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
 
     // Helper: call fetchMessages with a timeout guard
     const tryFetchMessages = async (timeoutMs = 15_000): Promise<any[]> => {
+      if (!chat) return [];
       const fetchPromise = chat.fetchMessages({ limit });
       const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('fetchMessages timed out')), timeoutMs),
@@ -309,20 +303,22 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
     try {
       // Layer 1: sync + fetch
       await trySyncHistory();
-      try {
-        messages = await tryFetchMessages();
-      } catch (fetchErr) {
-        const errMsg = (fetchErr as Error)?.message || 'unknown';
-        if (errMsg.includes('timed out')) {
-          logger.warn({ chatId }, 'fetchMessages timed out');
-        } else {
-          logger.warn({ chatId, err: errMsg }, 'fetchMessages threw error');
+      if (chat) {
+        try {
+          messages = await tryFetchMessages();
+        } catch (fetchErr) {
+          const errMsg = (fetchErr as Error)?.message || 'unknown';
+          if (errMsg.includes('timed out')) {
+            logger.warn({ chatId }, 'fetchMessages timed out');
+          } else {
+            logger.warn({ chatId, err: errMsg }, 'fetchMessages threw error');
+          }
         }
       }
 
       // Layer 2: if empty, retry fetchMessages after a short delay
       // (gives WA Web time to populate the store after syncHistory)
-      if ((!messages || messages.length === 0) && chat.lastMessage) {
+      if (chat && (!messages || messages.length === 0) && chat.lastMessage) {
         logger.info({ chatId }, 'fetchMessages returned empty — retrying after delay');
         await new Promise(r => setTimeout(r, 2000));
         try {
@@ -333,7 +329,7 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
       }
 
       // Layer 3: Direct Store read (deepest fallback)
-      if ((!messages || messages.length === 0) && chat.lastMessage) {
+      if ((!messages || messages.length === 0) && (!chat || chat.lastMessage)) {
         logger.info({ chatId }, 'fetchMessages still empty — falling back to direct Store read');
         try {
           messages = await tryStoreRead();
@@ -345,7 +341,7 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
 
       // Layer 4: Last resort — if everything failed but the chat has messages,
       // do a syncHistory + longer wait + final fetchMessages attempt
-      if ((!messages || messages.length === 0) && chat.lastMessage) {
+      if (chat && (!messages || messages.length === 0) && chat.lastMessage) {
         logger.info({ chatId }, 'All approaches empty — final retry with extended delay');
         await trySyncHistory();
         await new Promise(r => setTimeout(r, 3000));
