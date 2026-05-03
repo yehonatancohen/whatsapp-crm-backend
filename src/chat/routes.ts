@@ -181,9 +181,20 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
             const activated: boolean = await pupPage.evaluate(async (cid: string) => {
               const g = globalThis as any;
               const S = g.window?.Store ?? g.Store;
-              if (!S?.Chat || !S?.Cmd) return false;
+              
+              let ChatCollection: any;
+              let Cmd: any;
+              try {
+                ChatCollection = g.window.require('WAWebCollections').Chat;
+                Cmd = g.window.require('WAWebCmd').Cmd;
+              } catch {
+                ChatCollection = S?.Chat;
+                Cmd = S?.Cmd;
+              }
+              if (!ChatCollection || !Cmd) return false;
+
               // Find the @lid model whose contact resolves to this @c.us ID
-              const allModels: any[] = S.Chat.getModelsArray?.() ?? S.Chat._models ?? [];
+              const allModels: any[] = ChatCollection.getModelsArray?.() ?? ChatCollection._models ?? [];
               const lidModel = allModels.find((m: any) => {
                 if (!(m?.id?._serialized ?? '').endsWith('@lid')) return false;
                 const c = m.contact;
@@ -193,7 +204,7 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
               });
               if (!lidModel) return false;
               try {
-                const res = S.Cmd.openChatBottom?.(lidModel);
+                const res = Cmd.openChatBottom?.(lidModel);
                 if (res?.then) await Promise.race([res, new Promise((_, r) => setTimeout(r, 5000))]);
               } catch { /* non-fatal */ }
               return true;
@@ -223,8 +234,19 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
           const resolved: string | null = await pupPage.evaluate(async (lid: string) => {
             const g = globalThis as any;
             const S = g.window?.Store ?? g.Store;
-            if (!S?.Chat) return null;
-            const allModels: any[] = S.Chat.getModelsArray?.() ?? S.Chat._models ?? [];
+            
+            let ChatCollection: any;
+            let Cmd: any;
+            try {
+              ChatCollection = g.window.require('WAWebCollections').Chat;
+              Cmd = g.window.require('WAWebCmd').Cmd;
+            } catch {
+              ChatCollection = S?.Chat;
+              Cmd = S?.Cmd;
+            }
+            if (!ChatCollection) return null;
+
+            const allModels: any[] = ChatCollection.getModelsArray?.() ?? ChatCollection._models ?? [];
             const lidModel = allModels.find((m: any) => (m?.id?._serialized ?? '') === lid);
             if (!lidModel) return null;
             // Try to get @c.us ID from the contact
@@ -234,7 +256,7 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
             ) ?? null;
             // Activate the chat
             try {
-              const res = S.Cmd?.openChatBottom?.(lidModel);
+              const res = Cmd?.openChatBottom?.(lidModel);
               if (res?.then) await Promise.race([res, new Promise((_, r) => setTimeout(r, 5000))]);
             } catch { /* non-fatal */ }
             return cUsId;
