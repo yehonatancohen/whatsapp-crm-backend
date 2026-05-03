@@ -211,7 +211,25 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
           const S = g.Store;
           if (!S?.Chat) return { msgs: [], debug: 'no Store.Chat' };
 
-          const storeChat = S.Chat.get(cid);
+          let storeChat = S.Chat.get(cid);
+          
+          // If it's an @lid chat, messages are often stored under the @c.us chat object.
+          // Let's try to resolve it.
+          if (cid.endsWith('@lid')) {
+            const allContacts = S.Contact?.getModelsArray?.() ?? [];
+            const contact = allContacts.find((c: any) => c.lid?._serialized === cid || c.id?._serialized === cid);
+            if (contact) {
+              const cUsId = [contact.id?._serialized, contact.wid?._serialized].find((s: string) => s?.endsWith('@c.us'));
+              if (cUsId) {
+                const cUsChat = S.Chat.get(cUsId);
+                if (cUsChat) {
+                  cid = cUsId;
+                  storeChat = cUsChat;
+                }
+              }
+            }
+          }
+
           if (!storeChat) return { msgs: [], debug: 'chat not in Store' };
 
           // Warm-up: try every known WhatsApp Web internal API to force-load
@@ -329,7 +347,7 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
       }
 
       // Layer 3: Direct Store read (deepest fallback)
-      if ((!messages || messages.length === 0) && (!chat || chat.lastMessage)) {
+      if (!messages || messages.length === 0) {
         logger.info({ chatId }, 'fetchMessages still empty — falling back to direct Store read');
         try {
           messages = await tryStoreRead();
@@ -341,7 +359,7 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
 
       // Layer 4: Last resort — if everything failed but the chat has messages,
       // do a syncHistory + longer wait + final fetchMessages attempt
-      if (chat && (!messages || messages.length === 0) && chat.lastMessage) {
+      if (chat && (!messages || messages.length === 0)) {
         logger.info({ chatId }, 'All approaches empty — final retry with extended delay');
         await trySyncHistory();
         await new Promise(r => setTimeout(r, 3000));
