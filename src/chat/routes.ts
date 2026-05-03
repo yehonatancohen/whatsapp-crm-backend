@@ -167,7 +167,8 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
         if (pupPage) {
           try {
             const activated: boolean = await pupPage.evaluate(async (cid: string) => {
-              const S = (globalThis as any).Store;
+              const g = globalThis as any;
+              const S = g.window?.Store ?? g.Store;
               if (!S?.Chat || !S?.Cmd) return false;
               // Find the @lid model whose contact resolves to this @c.us ID
               const allModels: any[] = S.Chat.getModelsArray?.() ?? S.Chat._models ?? [];
@@ -197,6 +198,47 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
         }
         if (!chat) {
           logger.info({ chatId }, 'chat still null after activation — will attempt Store read');
+        }
+      }
+    }
+
+    // For @lid chats: activate via openChatBottom and resolve to @c.us so that
+    // the normal fetchMessages path can run (which works reliably for @c.us chats).
+    if (!chat && chatId.endsWith('@lid')) {
+      const pupPage = (client as any).pupPage;
+      if (pupPage) {
+        try {
+          const resolved: string | null = await pupPage.evaluate(async (lid: string) => {
+            const g = globalThis as any;
+            const S = g.window?.Store ?? g.Store;
+            if (!S?.Chat) return null;
+            const allModels: any[] = S.Chat.getModelsArray?.() ?? S.Chat._models ?? [];
+            const lidModel = allModels.find((m: any) => (m?.id?._serialized ?? '') === lid);
+            if (!lidModel) return null;
+            // Try to get @c.us ID from the contact
+            const contact = lidModel.contact;
+            const cUsId = [contact?.id?._serialized, contact?.wid?._serialized].find(
+              (s: any) => typeof s === 'string' && s.endsWith('@c.us'),
+            ) ?? null;
+            // Activate the chat
+            try {
+              const res = S.Cmd?.openChatBottom?.(lidModel);
+              if (res?.then) await Promise.race([res, new Promise((_, r) => setTimeout(r, 5000))]);
+            } catch { /* non-fatal */ }
+            return cUsId;
+          }, chatId);
+
+          if (resolved) {
+            await new Promise(r => setTimeout(r, 2000));
+            try {
+              chat = await client.getChatById(resolved);
+              if (chat) logger.info({ chatId, resolvedAs: resolved }, '@lid resolved and activated');
+            } catch { /* fall through to Store read */ }
+          } else {
+            logger.info({ chatId }, '@lid model not found in Store — will try Store read');
+          }
+        } catch (e) {
+          logger.warn({ chatId, err: (e as Error)?.message }, '@lid activation failed');
         }
       }
     }
@@ -245,7 +287,7 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
       const rawMessages = await pupPage.evaluate(
         async (cid: string, lim: number) => {
           const g = globalThis as any;
-          const S = g.Store;
+          const S = g.window?.Store ?? g.Store;
           if (!S?.Chat) return { msgs: [], debug: 'no Store.Chat' };
 
           let storeChat = S.Chat.get(cid);
