@@ -159,8 +159,10 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
         }
       }
       if (!chat) {
-        res.status(404).json({ error: 'הצ\'אט לא נמצא' });
-        return;
+        // Chat not found via standard API — may be a @lid-sourced chat whose @c.us
+        // ID doesn't appear in getChats(). Fall through to tryStoreRead instead of
+        // returning 404, which already has a reverse-lookup for these cases.
+        logger.info({ chatId }, 'getChatById returned null — attempting Store read fallback');
       }
     }
 
@@ -212,7 +214,24 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
           if (!S?.Chat) return { msgs: [], debug: 'no Store.Chat' };
 
           let storeChat = S.Chat.get(cid);
-          
+
+          // Reverse lookup: if a @lid-sourced chat was resolved to @c.us in
+          // /conversations but the Store doesn't have an entry under @c.us, find
+          // the matching @lid model whose contact points to this @c.us ID.
+          if (!storeChat && cid.endsWith('@c.us')) {
+            const allModels: any[] = S.Chat?.getModelsArray?.() ?? S.Chat?._models ?? [];
+            const lidModel = allModels.find((m: any) => {
+              if (!(m?.id?._serialized ?? '').endsWith('@lid')) return false;
+              const contact = m.contact;
+              return [contact?.id?._serialized, contact?.wid?._serialized].some(
+                (s: any) => typeof s === 'string' && s === cid,
+              );
+            });
+            if (lidModel) {
+              storeChat = lidModel;
+            }
+          }
+
           // If it's an @lid chat, messages are often stored under the @c.us chat object.
           // Let's try to resolve it.
           if (cid.endsWith('@lid')) {
