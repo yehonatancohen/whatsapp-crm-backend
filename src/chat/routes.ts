@@ -62,7 +62,8 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
               let resolvedFromLid = false;
 
               if (sid.endsWith('@lid')) {
-                // Multi-device private chat — try several paths to get @c.us WID
+                // Multi-device private chat — try several paths to get @c.us WID.
+                // Priority 1: fields that are already serialized as @c.us
                 const cands = [
                   chat.contact?.wid?._serialized,
                   chat.contact?.id?._serialized,
@@ -73,6 +74,17 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
                 if (cSid) {
                   chatId = cSid;
                   resolvedFromLid = true;
+                } else {
+                  // Priority 2: derive @c.us from the contact's phone number field.
+                  // WA stores the E.164 number (without +) in contact.number.
+                  const rawPhone: string =
+                    chat.contact?.number ??
+                    chat.contact?.formattedPhone?.replace(/[^0-9]/g, '') ??
+                    '';
+                  if (rawPhone && /^\d{7,15}$/.test(rawPhone)) {
+                    chatId = `${rawPhone}@c.us`;
+                    resolvedFromLid = true;
+                  }
                 }
               }
 
