@@ -300,15 +300,27 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
         async (cid: string, lim: number) => {
           const g = globalThis as any;
           const S = g.window?.Store ?? g.Store;
-          if (!S?.Chat) return { msgs: [], debug: 'no Store.Chat' };
+          
+          let ChatCollection: any;
+          let ContactCollection: any;
+          try { 
+            const colls = g.window.require('WAWebCollections');
+            ChatCollection = colls.Chat;
+            ContactCollection = colls.Contact;
+          } catch {
+            ChatCollection = S?.Chat;
+            ContactCollection = S?.Contact;
+          }
 
-          let storeChat = S.Chat.get(cid);
+          if (!ChatCollection) return { msgs: [], debug: 'no Store.Chat' };
+
+          let storeChat = ChatCollection.get(cid);
 
           // Reverse lookup: if a @lid-sourced chat was resolved to @c.us in
           // /conversations but the Store doesn't have an entry under @c.us, find
           // the matching @lid model whose contact points to this @c.us ID.
           if (!storeChat && cid.endsWith('@c.us')) {
-            const allModels: any[] = S.Chat?.getModelsArray?.() ?? S.Chat?._models ?? [];
+            const allModels: any[] = ChatCollection.getModelsArray?.() ?? ChatCollection._models ?? [];
             const lidModel = allModels.find((m: any) => {
               if (!(m?.id?._serialized ?? '').endsWith('@lid')) return false;
               const contact = m.contact;
@@ -323,13 +335,13 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
 
           // If it's an @lid chat, messages are often stored under the @c.us chat object.
           // Let's try to resolve it.
-          if (cid.endsWith('@lid')) {
-            const allContacts = S.Contact?.getModelsArray?.() ?? [];
+          if (cid.endsWith('@lid') && ContactCollection) {
+            const allContacts = ContactCollection.getModelsArray?.() ?? [];
             const contact = allContacts.find((c: any) => c.lid?._serialized === cid || c.id?._serialized === cid);
             if (contact) {
               const cUsId = [contact.id?._serialized, contact.wid?._serialized].find((s: string) => s?.endsWith('@c.us'));
               if (cUsId) {
-                const cUsChat = S.Chat.get(cUsId);
+                const cUsChat = ChatCollection.get(cUsId);
                 if (cUsChat) {
                   cid = cUsId;
                   storeChat = cUsChat;
