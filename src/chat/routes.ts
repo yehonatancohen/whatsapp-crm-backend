@@ -159,10 +159,45 @@ router.get('/:accountId/:chatId/messages', async (req: Request, res: Response, n
         }
       }
       if (!chat) {
-        // Chat not found via standard API — may be a @lid-sourced chat whose @c.us
-        // ID doesn't appear in getChats(). Fall through to tryStoreRead instead of
-        // returning 404, which already has a reverse-lookup for these cases.
-        logger.info({ chatId }, 'getChatById returned null — attempting Store read fallback');
+        // Chat not found via standard API — likely a @lid-sourced chat whose @c.us
+        // ID is not yet "activated" in WA Web's session.  Activate it by finding the
+        // matching @lid Store model and calling openChatBottom, then retry.
+        logger.info({ chatId }, 'getChatById returned null — trying @lid activation');
+        const pupPage = (client as any).pupPage;
+        if (pupPage) {
+          try {
+            const activated: boolean = await pupPage.evaluate(async (cid: string) => {
+              const S = (globalThis as any).Store;
+              if (!S?.Chat || !S?.Cmd) return false;
+              // Find the @lid model whose contact resolves to this @c.us ID
+              const allModels: any[] = S.Chat.getModelsArray?.() ?? S.Chat._models ?? [];
+              const lidModel = allModels.find((m: any) => {
+                if (!(m?.id?._serialized ?? '').endsWith('@lid')) return false;
+                const c = m.contact;
+                return [c?.id?._serialized, c?.wid?._serialized].some(
+                  (s: any) => typeof s === 'string' && s === cid,
+                );
+              });
+              if (!lidModel) return false;
+              try {
+                const res = S.Cmd.openChatBottom?.(lidModel);
+                if (res?.then) await Promise.race([res, new Promise((_, r) => setTimeout(r, 5000))]);
+              } catch { /* non-fatal */ }
+              return true;
+            }, chatId);
+
+            if (activated) {
+              await new Promise(r => setTimeout(r, 2000));
+              try { chat = await client.getChatById(chatId); } catch { /* ignore */ }
+              if (chat) logger.info({ chatId }, '@lid activation succeeded — chat now available');
+            }
+          } catch (e) {
+            logger.warn({ chatId, err: (e as Error)?.message }, '@lid activation failed');
+          }
+        }
+        if (!chat) {
+          logger.info({ chatId }, 'chat still null after activation — will attempt Store read');
+        }
       }
     }
 
