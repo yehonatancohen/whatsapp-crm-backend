@@ -179,7 +179,7 @@ export function createCampaignProcessorWorker(): Worker {
           chatId = `${cleanPhone}@c.us`;
         }
 
-        // Send with a brief human presence signal; rate is controlled by scheduleNextJob delay
+        // Send with presence + typing signal; rate is controlled by scheduleNextJob delay
         await simulateFastSend(client, chatId, resolvedText, { linkPreview: true });
 
         // Mark as SENT
@@ -430,7 +430,7 @@ export function createCampaignSchedulerWorker(): Worker {
 async function scheduleNextJob(campaignId: string, messagesPerMinute: number, jobStartMs = 0): Promise<void> {
   const targetIntervalMs = Math.round(60_000 / messagesPerMinute);
   const elapsedMs = jobStartMs > 0 ? Date.now() - jobStartMs : 0;
-  const delayMs = Math.max(1_000, targetIntervalMs - elapsedMs);
+  const delayMs = Math.max(100, targetIntervalMs - elapsedMs);
 
   await campaignProcessQueue.add(
     'process-message',

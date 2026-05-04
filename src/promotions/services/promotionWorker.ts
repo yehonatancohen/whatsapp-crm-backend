@@ -109,7 +109,7 @@ export function createPromotionProcessorWorker(): Worker {
         const client = instance!.getClient();
         if (!client) throw new Error('WhatsApp client not ready');
 
-        // Send with a brief human presence signal; rate is controlled by scheduleNextJob delay
+        // Send with presence + typing signal; rate is controlled by scheduleNextJob delay
         await simulateFastSend(client, pendingLog.groupJid, resolvedText, { linkPreview: true });
 
         await prisma.groupPromotionLog.update({
@@ -174,7 +174,7 @@ export function createPromotionProcessorWorker(): Worker {
 async function scheduleNextJob(promotionId: string, messagesPerMinute: number, jobStartMs = 0): Promise<void> {
   const targetIntervalMs = Math.round(60_000 / messagesPerMinute);
   const elapsedMs = jobStartMs > 0 ? Date.now() - jobStartMs : 0;
-  const delayMs = Math.max(1_000, targetIntervalMs - elapsedMs);
+  const delayMs = Math.max(100, targetIntervalMs - elapsedMs);
   await promotionProcessQueue.add(
     'process-promotion',
     { promotionId },

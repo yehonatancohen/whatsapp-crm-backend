@@ -197,12 +197,10 @@ export async function simulateHumanSend(
 }
 
 /**
- * Sends a message with a minimal human presence signal: sets presence,
- * shows a typing indicator for 500–1 500 ms, then sends.
- *
- * Unlike simulateHumanSend, the delay is fixed and short so it does not
- * exceed the caller's rate-limit interval. Used by campaign and promotion
- * workers where throughput accuracy matters.
+ * Sends a message with minimal presence signalling and no artificial sleep.
+ * Used by campaign and promotion workers where the BullMQ delay in
+ * scheduleNextJob controls the rate; no extra latency is added here so the
+ * configured messagesPerMinute is honoured accurately even at high rates.
  */
 export async function simulateFastSend(
     client: Client,
@@ -213,6 +211,5 @@ export async function simulateFastSend(
     await client.sendPresenceAvailable();
     const chat = await client.getChatById(chatId);
     await chat.sendStateTyping();
-    await sleep(randInt(500, 1_500));
     await chat.sendMessage(text, sendOptions);
 }
