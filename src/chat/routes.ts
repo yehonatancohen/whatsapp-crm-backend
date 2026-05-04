@@ -38,7 +38,7 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
         const rawChats: Array<{
           chatId: string; name: string; unreadCount: number; timestamp: number;
           isGroup: boolean; resolvedFromLid: boolean;
-          lastMessage: { body: string; timestamp: number; fromMe: boolean } | null;
+          lastMessage: { body: string; timestamp: number; fromMe: boolean; type: string } | null;
         }> = await Promise.race([
           pupPage.evaluate(async () => {
             const g = globalThis as any;
@@ -101,9 +101,10 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
                 isGroup:     !!chat.isGroup || sid.endsWith('@g.us'),
                 resolvedFromLid,
                 lastMessage: lm ? {
-                  body:      typeof lm.body === 'string' ? lm.body : '',
+                  body:      typeof lm.body === 'string' ? lm.body : (typeof lm._data?.body === 'string' ? lm._data.body : ''),
                   timestamp: lm.t ?? lm.timestamp ?? 0,
                   fromMe:    !!lm.id?.fromMe,
+                  type:      lm.type ?? lm._data?.type ?? '',
                 } : null,
               });
             }
