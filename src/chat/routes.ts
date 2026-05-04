@@ -88,7 +88,18 @@ router.get('/conversations', async (req: Request, res: Response, next: NextFunct
                 }
               }
 
-              const lm = chat.lastMessage ?? chat.msgs?.last ?? null;
+              let lm = chat.lastMessage;
+              if (!lm && chat.msgs) {
+                if (typeof chat.msgs.last === 'function') {
+                  lm = chat.msgs.last();
+                } else if (chat.msgs.last) {
+                  lm = chat.msgs.last;
+                } else {
+                  const msgsArr = chat.msgs.getModelsArray?.() ?? chat.msgs._models ?? chat.msgs.models ?? (Array.isArray(chat.msgs) ? chat.msgs : []);
+                  if (msgsArr.length > 0) lm = msgsArr[msgsArr.length - 1];
+                }
+              }
+              if (!lm) lm = null;
               const name = chat.name || chat.formattedTitle ||
                            chat.contact?.pushname || chat.contact?.name ||
                            chat.contact?.notify || chat.id?.user || chatId;
