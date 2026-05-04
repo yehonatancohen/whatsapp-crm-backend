@@ -195,3 +195,21 @@ export async function simulateHumanSend(
     // 7. Send the actual message (pass optional sendOptions e.g. { linkPreview: true })
     await chat.sendMessage(text, sendOptions);
 }
+
+/**
+ * Sends a message with minimal presence signalling and no artificial sleep.
+ * Used by campaign and promotion workers where the BullMQ delay in
+ * scheduleNextJob controls the rate; no extra latency is added here so the
+ * configured messagesPerMinute is honoured accurately even at high rates.
+ */
+export async function simulateFastSend(
+    client: Client,
+    chatId: string,
+    text: string,
+    sendOptions?: Record<string, unknown>,
+): Promise<void> {
+    await client.sendPresenceAvailable();
+    const chat = await client.getChatById(chatId);
+    await chat.sendStateTyping();
+    await chat.sendMessage(text, sendOptions);
+}

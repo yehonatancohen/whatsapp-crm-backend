@@ -5,7 +5,7 @@ import { logger } from '../../shared/logger';
 import { emitToUser, emitToCampaign } from '../../shared/socket';
 import { ClientManager } from '../../accounts/services/ClientManager';
 import { resolveSpintax } from '../../warmup/spintax';
-import { simulateHumanSend } from '../../warmup/humanDelay';
+import { simulateFastSend } from '../../warmup/humanDelay';
 import { selectAccount } from './accountSelector';
 import { campaignProcessQueue } from '../campaignQueue';
 
@@ -179,8 +179,8 @@ export function createCampaignProcessorWorker(): Worker {
           chatId = `${cleanPhone}@c.us`;
         }
 
-        // Send the message with human-like behavior
-        await simulateHumanSend(client, chatId, resolvedText, { linkPreview: true });
+        // Send with presence + typing signal; rate is controlled by scheduleNextJob delay
+        await simulateFastSend(client, chatId, resolvedText, { linkPreview: true });
 
         // Mark as SENT
         await prisma.campaignMessage.update({
@@ -430,7 +430,7 @@ export function createCampaignSchedulerWorker(): Worker {
 async function scheduleNextJob(campaignId: string, messagesPerMinute: number, jobStartMs = 0): Promise<void> {
   const targetIntervalMs = Math.round(60_000 / messagesPerMinute);
   const elapsedMs = jobStartMs > 0 ? Date.now() - jobStartMs : 0;
-  const delayMs = Math.max(1_000, targetIntervalMs - elapsedMs);
+  const delayMs = Math.max(100, targetIntervalMs - elapsedMs);
 
   await campaignProcessQueue.add(
     'process-message',
