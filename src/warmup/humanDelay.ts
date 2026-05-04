@@ -195,3 +195,24 @@ export async function simulateHumanSend(
     // 7. Send the actual message (pass optional sendOptions e.g. { linkPreview: true })
     await chat.sendMessage(text, sendOptions);
 }
+
+/**
+ * Sends a message with a minimal human presence signal: sets presence,
+ * shows a typing indicator for 500–1 500 ms, then sends.
+ *
+ * Unlike simulateHumanSend, the delay is fixed and short so it does not
+ * exceed the caller's rate-limit interval. Used by campaign and promotion
+ * workers where throughput accuracy matters.
+ */
+export async function simulateFastSend(
+    client: Client,
+    chatId: string,
+    text: string,
+    sendOptions?: Record<string, unknown>,
+): Promise<void> {
+    await client.sendPresenceAvailable();
+    const chat = await client.getChatById(chatId);
+    await chat.sendStateTyping();
+    await sleep(randInt(500, 1_500));
+    await chat.sendMessage(text, sendOptions);
+}

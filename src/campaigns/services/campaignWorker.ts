@@ -5,7 +5,7 @@ import { logger } from '../../shared/logger';
 import { emitToUser, emitToCampaign } from '../../shared/socket';
 import { ClientManager } from '../../accounts/services/ClientManager';
 import { resolveSpintax } from '../../warmup/spintax';
-import { simulateHumanSend } from '../../warmup/humanDelay';
+import { simulateFastSend } from '../../warmup/humanDelay';
 import { selectAccount } from './accountSelector';
 import { campaignProcessQueue } from '../campaignQueue';
 
@@ -179,8 +179,8 @@ export function createCampaignProcessorWorker(): Worker {
           chatId = `${cleanPhone}@c.us`;
         }
 
-        // Send the message with human-like behavior
-        await simulateHumanSend(client, chatId, resolvedText, { linkPreview: true });
+        // Send with a brief human presence signal; rate is controlled by scheduleNextJob delay
+        await simulateFastSend(client, chatId, resolvedText, { linkPreview: true });
 
         // Mark as SENT
         await prisma.campaignMessage.update({

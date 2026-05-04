@@ -5,7 +5,7 @@ import { logger } from '../../shared/logger';
 import { emitToUser } from '../../shared/socket';
 import { ClientManager } from '../../accounts/services/ClientManager';
 import { resolveSpintax } from '../../warmup/spintax';
-import { simulateHumanSend } from '../../warmup/humanDelay';
+import { simulateFastSend } from '../../warmup/humanDelay';
 import { selectPromotionAccount } from './promotionAccountSelector';
 import { promotionProcessQueue } from '../promotionQueue';
 
@@ -20,6 +20,7 @@ export function createPromotionProcessorWorker(): Worker {
     'promotion-process',
     async (job: Job<{ promotionId: string }>) => {
       const { promotionId } = job.data;
+      const jobStartMs = Date.now();
 
       const promotion = await prisma.groupPromotion.findUnique({
         where: { id: promotionId },
@@ -89,7 +90,7 @@ export function createPromotionProcessorWorker(): Worker {
             errorMessage: 'No eligible account is a member of the target group',
           },
         });
-        await scheduleNextJob(promotionId, promotion.messagesPerMinute);
+        await scheduleNextJob(promotionId, promotion.messagesPerMinute, jobStartMs);
         return;
       }
 
@@ -108,8 +109,8 @@ export function createPromotionProcessorWorker(): Worker {
         const client = instance!.getClient();
         if (!client) throw new Error('WhatsApp client not ready');
 
-        // Send with human simulation + link preview enabled
-        await simulateHumanSend(client, pendingLog.groupJid, resolvedText, { linkPreview: true });
+        // Send with a brief human presence signal; rate is controlled by scheduleNextJob delay
+        await simulateFastSend(client, pendingLog.groupJid, resolvedText, { linkPreview: true });
 
         await prisma.groupPromotionLog.update({
           where: { id: pendingLog.id },
@@ -158,7 +159,7 @@ export function createPromotionProcessorWorker(): Worker {
         );
       }
 
-      await scheduleNextJob(promotionId, promotion.messagesPerMinute);
+      await scheduleNextJob(promotionId, promotion.messagesPerMinute, jobStartMs);
     },
     { connection: redis, concurrency: 1 },
   );
@@ -170,8 +171,10 @@ export function createPromotionProcessorWorker(): Worker {
   return worker;
 }
 
-async function scheduleNextJob(promotionId: string, messagesPerMinute: number): Promise<void> {
-  const delayMs = Math.round(60_000 / messagesPerMinute);
+async function scheduleNextJob(promotionId: string, messagesPerMinute: number, jobStartMs = 0): Promise<void> {
+  const targetIntervalMs = Math.round(60_000 / messagesPerMinute);
+  const elapsedMs = jobStartMs > 0 ? Date.now() - jobStartMs : 0;
+  const delayMs = Math.max(1_000, targetIntervalMs - elapsedMs);
   await promotionProcessQueue.add(
     'process-promotion',
     { promotionId },
