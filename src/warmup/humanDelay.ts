@@ -59,8 +59,10 @@ export async function preFetchLinkPreview(client: Client, text: string): Promise
             page.evaluate(async (messageText: string) => {
                 const out: { status: string; url?: string; error?: string } = { status: 'unknown' };
                 try {
-                    // Use the same APIs that whatsapp-web.js Utils.js sendMessage uses internally
-                    const { findLink } = window.require('WALinkify');
+                    // Use the same APIs that whatsapp-web.js Utils.js sendMessage uses internally.
+                    // Access via globalThis to avoid TypeScript "window not found" in Node context.
+                    const g = globalThis as any;
+                    const { findLink } = g.window.require('WALinkify');
                     const link = findLink(messageText);
                     if (!link) {
                         out.status = 'no-url-found';
@@ -68,7 +70,7 @@ export async function preFetchLinkPreview(client: Client, text: string): Promise
                     }
                     out.url = typeof link === 'string' ? link : link?.href ?? String(link);
 
-                    const preview = await window
+                    const preview = await g.window
                         .require('WAWebLinkPreviewChatAction')
                         .getLinkPreview(link);
 
