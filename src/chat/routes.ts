@@ -1133,7 +1133,10 @@ router.post('/:accountId/:chatId/send-image', validate(sendImageSchema), async (
       return;
     }
 
-    const media = new MessageMedia(mimeType, data);
+    // Derive a filename from the MIME type (needed by mediaInfoToFile in WA Web)
+    const baseImageMime = mimeType.split(';')[0].trim();
+    const imgExt = baseImageMime.split('/')[1] || 'jpg';
+    const media = new MessageMedia(baseImageMime, data, `image.${imgExt}`);
     const sendOptions: Record<string, unknown> = {};
     if (caption) sendOptions.caption = caption;
 
@@ -1216,10 +1219,11 @@ router.post('/:accountId/:chatId/send-voice', validate(sendVoiceSchema), async (
       return;
     }
 
-    // Use the filename extension that matches the actual container format.
-    // Chrome records as audio/webm;codecs=opus — WA Web handles it natively.
-    const filename = mimeType.includes('webm') ? 'voice.webm' : 'voice.ogg';
-    const media = new MessageMedia(mimeType, data, filename);
+    // Strip codec params (e.g. "audio/webm;codecs=opus" → "audio/webm") so WA
+    // Web's media type detection works correctly with sendAudioAsVoice.
+    const baseMimeType = mimeType.split(';')[0].trim();
+    const filename = baseMimeType.includes('webm') ? 'voice.webm' : 'voice.ogg';
+    const media = new MessageMedia(baseMimeType, data, filename);
     const msg = await client.sendMessage(chatId, media, { sendAudioAsVoice: true } as any);
 
     res.json({
