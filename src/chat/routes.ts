@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { Readable, PassThrough } from 'stream';
 import { z } from 'zod';
 import { MessageMedia } from 'whatsapp-web.js';
 import { authenticate } from '../shared/middleware/auth';
@@ -6,6 +7,31 @@ import { validate } from '../shared/middleware/validate';
 import { ClientManager } from '../accounts/services/ClientManager';
 import { logger } from '../shared/logger';
 import { preFetchLinkPreview } from '../warmup/humanDelay';
+
+// Convert a WebM/Opus blob (base64) to OGG/Opus (base64) using ffmpeg.
+// WhatsApp Web's prepRawMedia cannot reliably process WebM in headless Chromium
+// when sendAudioAsVoice is true, but OGG Opus works correctly.
+function convertWebmToOgg(webmBase64: string): Promise<string> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const Ffmpeg = require('fluent-ffmpeg') as any;
+  return new Promise((resolve, reject) => {
+    const inputBuf = Buffer.from(webmBase64, 'base64');
+    const inputStream = new Readable();
+    inputStream.push(inputBuf);
+    inputStream.push(null);
+    const chunks: Buffer[] = [];
+    const output = new PassThrough();
+    output.on('data', (c: Buffer) => chunks.push(c));
+    output.on('end', () => resolve(Buffer.concat(chunks).toString('base64')));
+    output.on('error', (err: Error) => reject(err));
+    Ffmpeg(inputStream)
+      .inputFormat('webm')
+      .audioCodec('libopus')
+      .format('ogg')
+      .on('error', (err: Error) => reject(err))
+      .pipe(output, { end: true });
+  });
+}
 
 const router = Router();
 router.use(authenticate);
@@ -1219,11 +1245,24 @@ router.post('/:accountId/:chatId/send-voice', validate(sendVoiceSchema), async (
       return;
     }
 
-    // Strip codec params (e.g. "audio/webm;codecs=opus" → "audio/webm") so WA
-    // Web's media type detection works correctly with sendAudioAsVoice.
     const baseMimeType = mimeType.split(';')[0].trim();
-    const filename = baseMimeType.includes('webm') ? 'voice.webm' : 'voice.ogg';
-    const media = new MessageMedia(baseMimeType, data, filename);
+
+    // WhatsApp Web's prepRawMedia cannot process WebM Opus as PTT in headless
+    // Chromium — convert to OGG Opus server-side so sendAudioAsVoice works.
+    let audioData = data;
+    let audioMime = baseMimeType;
+    if (baseMimeType === 'audio/webm') {
+      try {
+        audioData = await convertWebmToOgg(data);
+        audioMime = 'audio/ogg';
+        logger.info({ chatId }, 'Converted WebM audio to OGG for PTT');
+      } catch (convErr) {
+        logger.warn({ chatId, err: (convErr as Error)?.message }, 'WebM→OGG conversion failed, using original format');
+      }
+    }
+
+    const filename = audioMime.includes('webm') ? 'voice.webm' : 'voice.ogg';
+    const media = new MessageMedia(audioMime, audioData, filename);
     const msg = await client.sendMessage(chatId, media, { sendAudioAsVoice: true } as any);
 
     res.json({

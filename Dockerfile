@@ -16,9 +16,10 @@ RUN npm run build
 # ── Stage 2: Production runtime ────────────────────────────────
 FROM node:20-slim
 
-# Install Chromium and its dependencies (required by Puppeteer / whatsapp-web.js)
+# Install Chromium, ffmpeg (for WebM→OGG voice conversion), and dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
+    ffmpeg \
     fonts-ipafont-gothic \
     fonts-freefont-ttf \
     fonts-noto-color-emoji \
