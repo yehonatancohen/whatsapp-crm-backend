@@ -8,6 +8,7 @@ import { resolveSpintax } from '../../warmup/spintax';
 import { simulateFastSend } from '../../warmup/humanDelay';
 import { selectPromotionAccount } from './promotionAccountSelector';
 import { promotionProcessQueue } from '../promotionQueue';
+import { isSessionExpiredError, handleSessionExpiredError } from '../../shared/utils/sessionErrors';
 
 const redis = redisInstance as any;
 
@@ -139,6 +140,10 @@ export function createPromotionProcessorWorker(): Worker {
         );
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+
+        if (isSessionExpiredError(err)) {
+          await handleSessionExpiredError(account.id, account.userId, errorMessage);
+        }
 
         await prisma.groupPromotionLog.update({
           where: { id: pendingLog.id },

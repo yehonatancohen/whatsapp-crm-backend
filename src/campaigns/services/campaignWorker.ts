@@ -8,6 +8,7 @@ import { resolveSpintax } from '../../warmup/spintax';
 import { simulateFastSend } from '../../warmup/humanDelay';
 import { selectAccount } from './accountSelector';
 import { campaignProcessQueue } from '../campaignQueue';
+import { isSessionExpiredError, handleSessionExpiredError } from '../../shared/utils/sessionErrors';
 
 // BullMQ bundles its own ioredis types — cast to avoid duplicate-type mismatches.
 const redis = redisInstance as any;
@@ -220,6 +221,10 @@ export function createCampaignProcessorWorker(): Worker {
         );
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'Unknown send error';
+
+        if (isSessionExpiredError(err)) {
+          await handleSessionExpiredError(account.id, account.userId, errorMessage);
+        }
 
         await prisma.campaignMessage.update({
           where: { id: message.id },
