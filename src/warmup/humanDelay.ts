@@ -57,58 +57,27 @@ export async function preFetchLinkPreview(client: Client, text: string): Promise
 
         const result = await Promise.race([
             page.evaluate(async (messageText: string) => {
-                const out: { status: string; url?: string; pathTried?: string[]; error?: string } = {
-                    status: 'unknown',
-                };
+                const out: { status: string; url?: string; error?: string } = { status: 'unknown' };
                 try {
-                    const store = (globalThis as any).Store;
-                    if (!store) {
-                        out.status = 'no-store';
-                        return out;
-                    }
-
-                    let link: string | null = null;
-                    if (typeof store?.Validators?.findLink === 'function') {
-                        link = store.Validators.findLink(messageText) ?? null;
-                    } else if (typeof store?.URLUtils?.findLink === 'function') {
-                        link = store.URLUtils.findLink(messageText) ?? null;
-                    }
-                    if (!link) {
-                        const m = messageText.match(/https?:\/\/[^\s<>"{}|\\^`[\]]+/);
-                        link = m ? m[0] : null;
-                    }
+                    // Use the same APIs that whatsapp-web.js Utils.js sendMessage uses internally.
+                    // Access via globalThis to avoid TypeScript "window not found" in Node context.
+                    const g = globalThis as any;
+                    const { findLink } = g.window.require('WALinkify');
+                    const link = findLink(messageText);
                     if (!link) {
                         out.status = 'no-url-found';
                         return out;
                     }
-                    out.url = link;
+                    out.url = typeof link === 'string' ? link : link?.href ?? String(link);
 
-                    const candidates: Array<[string, Function | undefined]> = [
-                        ['Store.LinkPreview.getLinkPreview', store?.LinkPreview?.getLinkPreview?.bind(store.LinkPreview)],
-                        ['Store.LinkPreviewStore.getLinkPreview', store?.LinkPreviewStore?.getLinkPreview?.bind(store.LinkPreviewStore)],
-                        ['Store.Preview.getLinkPreview', store?.Preview?.getLinkPreview?.bind(store.Preview)],
-                        ['Store.OGPreview.getLinkPreview', store?.OGPreview?.getLinkPreview?.bind(store.OGPreview)],
-                        ['Store.getLinkPreview', typeof store?.getLinkPreview === 'function' ? store.getLinkPreview.bind(store) : undefined],
-                    ];
+                    const preview = await g.window
+                        .require('WAWebLinkPreviewChatAction')
+                        .getLinkPreview(link);
 
-                    out.pathTried = [];
-                    for (const [name, fn] of candidates) {
-                        if (!fn) continue;
-                        out.pathTried.push(name);
-                        try {
-                            const r = await (fn as Function)(link);
-                            out.status = `fetched-via:${name}`;
-                            (out as any).hasResult = !!r;
-                            return out;
-                        } catch (e: any) {
-                            (out as any)[`err:${name}`] = e?.message || String(e);
-                        }
-                    }
-
-                    out.status = 'no-store-path-available';
+                    out.status = preview?.data ? 'fetched' : 'no-data';
                     return out;
                 } catch (e: any) {
-                    out.status = 'evaluate-threw';
+                    out.status = 'error';
                     out.error = e?.message || String(e);
                     return out;
                 }
