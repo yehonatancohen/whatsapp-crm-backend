@@ -71,7 +71,7 @@ services:
     image: redis:7-alpine
     container_name: parties247-redis
     restart: unless-stopped
-    command: [ "redis-server", "--appendonly", "yes" ]
+    command: [ "redis-server", "--appendonly", "yes", "--stop-writes-on-bgsave-error", "no" ]
     volumes:
       - redisdata:/data
     healthcheck:
