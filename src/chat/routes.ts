@@ -702,9 +702,7 @@ router.post('/:accountId/:chatId/send', validate(sendSchema), async (req: Reques
       sendOptions = { ...sendOptions, quotedMessageId };
     }
 
-    // Pre-fetch link preview so WA servers have OG metadata cached before send
     await preFetchLinkPreview(client, body);
-
     const msg = await client.sendMessage(chatId, body, sendOptions);
 
     res.json({
@@ -1479,6 +1477,82 @@ router.get('/debug/lid-structure', async (req: Request, res: Response, next: Nex
       results.push({ accountId: instance.id, ...dump });
     }
     res.json(results);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Diagnostic: inspect raw getLinkPreview output ─────────────────────────
+// Usage: GET /api/chat/debug/link-preview?secret=lp123&url=https://...&accountId=...
+// Returns the raw result from WAWebLinkPreviewChatAction.getLinkPreview so we
+// can see whether the format changed (preview.data vs direct preview object).
+router.get('/debug/link-preview', async (req: Request, res: Response, next: NextFunction) => {
+  if (req.query.secret !== 'lp123') { res.status(403).json({ error: 'forbidden' }); return; }
+  const url = req.query.url as string;
+  const accountId = req.query.accountId as string;
+  if (!url || !accountId) { res.status(400).json({ error: 'url and accountId required' }); return; }
+  try {
+    const manager = ClientManager.getInstance();
+    const instance = manager.getInstanceById(accountId);
+    if (!instance || instance.status !== 'AUTHENTICATED') {
+      res.status(400).json({ error: 'Account not authenticated' });
+      return;
+    }
+    const client = instance.getClient();
+    if (!client) { res.status(400).json({ error: 'No client' }); return; }
+    const pupPage = (client as any).pupPage;
+    if (!pupPage) { res.status(400).json({ error: 'No pupPage' }); return; }
+
+    const result = await Promise.race([
+      pupPage.evaluate(async (testUrl: string) => {
+        const g = globalThis as any;
+        const out: any = { steps: [] };
+        try {
+          // Step 1: try WALinkify.findLink
+          try {
+            const { findLink } = g.window.require('WALinkify');
+            const link = findLink(testUrl);
+            out.findLinkResult = link ? (typeof link === 'string' ? link : JSON.stringify(link)) : null;
+            out.steps.push('findLink ok');
+          } catch (e: any) {
+            out.findLinkError = e?.message;
+            out.steps.push('findLink failed');
+          }
+
+          // Step 2: call getLinkPreview with the raw URL string
+          try {
+            const getLinkPreview = g.window.require('WAWebLinkPreviewChatAction').getLinkPreview;
+            out.steps.push('getLinkPreview loaded');
+            const preview = await getLinkPreview(testUrl);
+            out.previewRaw = preview;
+            out.previewType = typeof preview;
+            out.previewIsNull = preview === null || preview === undefined;
+            if (preview) {
+              out.previewTopKeys = Object.keys(preview);
+              out.hasData = 'data' in preview;
+              if (preview.data) {
+                out.previewDataKeys = Object.keys(preview.data);
+                out.hasJpegThumbnail = !!preview.data.jpegThumbnail;
+                out.hasMatchedText = !!preview.data.matchedText;
+              }
+              // Also check direct format (no .data wrapper)
+              out.hasDirectMatchedText = !!preview.matchedText;
+              out.hasDirectJpegThumbnail = !!preview.jpegThumbnail;
+            }
+            out.steps.push('getLinkPreview called');
+          } catch (e: any) {
+            out.getLinkPreviewError = e?.message;
+            out.steps.push('getLinkPreview call failed');
+          }
+        } catch (e: any) {
+          out.outerError = e?.message;
+        }
+        return out;
+      }, url),
+      new Promise((resolve) => setTimeout(() => resolve({ error: 'timeout-15s' }), 15_000)),
+    ]);
+
+    res.json(result);
   } catch (err) {
     next(err);
   }

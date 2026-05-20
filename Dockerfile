@@ -4,6 +4,7 @@ FROM node:20-slim AS builder
 WORKDIR /app
 
 COPY package.json package-lock.json ./
+COPY patches/ ./patches/
 RUN npm ci
 
 COPY tsconfig.json ./
@@ -43,14 +44,22 @@ RUN groupadd -r appuser && useradd -r -g appuser -G audio,video appuser \
 
 WORKDIR /app
 
-# Install only production dependencies
+# Install only production dependencies.
+# --ignore-scripts skips postinstall (patch-package) which is a devDependency;
+# the patched whatsapp-web.js file is copied from the builder stage instead.
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 # Copy Prisma schema + generated client + migrations
 COPY prisma/ ./prisma/
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/node_modules/@prisma/client ./node_modules/@prisma/client
+
+# Copy the patch-package-patched whatsapp-web.js file from the builder stage.
+# patch-package is a devDependency so it only runs in the builder; we carry
+# the already-patched file into the production image instead of re-patching here.
+COPY --from=builder /app/node_modules/whatsapp-web.js/src/util/Injected/Utils.js \
+     ./node_modules/whatsapp-web.js/src/util/Injected/Utils.js
 
 # Copy compiled output from builder stage
 COPY --from=builder /app/dist ./dist
