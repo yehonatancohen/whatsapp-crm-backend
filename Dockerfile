@@ -52,6 +52,12 @@ COPY prisma/ ./prisma/
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/node_modules/@prisma/client ./node_modules/@prisma/client
 
+# Copy the patch-package-patched whatsapp-web.js file from the builder stage.
+# patch-package is a devDependency so it only runs in the builder; we carry
+# the already-patched file into the production image instead of re-patching here.
+COPY --from=builder /app/node_modules/whatsapp-web.js/src/util/Injected/Utils.js \
+     ./node_modules/whatsapp-web.js/src/util/Injected/Utils.js
+
 # Copy compiled output from builder stage
 COPY --from=builder /app/dist ./dist
 
