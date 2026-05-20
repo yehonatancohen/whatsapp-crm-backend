@@ -43,9 +43,11 @@ RUN groupadd -r appuser && useradd -r -g appuser -G audio,video appuser \
 
 WORKDIR /app
 
-# Install only production dependencies
+# Install only production dependencies.
+# --ignore-scripts skips postinstall (patch-package) which is a devDependency;
+# the patched whatsapp-web.js file is copied from the builder stage instead.
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 # Copy Prisma schema + generated client + migrations
 COPY prisma/ ./prisma/
