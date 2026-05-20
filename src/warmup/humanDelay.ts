@@ -69,12 +69,13 @@ function parseOgTags(html: string): Record<string, string> {
 }
 
 /** Download a URL to a Buffer (follows up to 3 redirects, optional maxBytes cap). */
-function downloadBuffer(url: string, redirectsLeft = 3, maxBytes = 5 * 1024 * 1024): Promise<Buffer> {
+function downloadBuffer(url: string, redirectsLeft = 3, maxBytes = 5 * 1024 * 1024, referer?: string): Promise<Buffer> {
     return new Promise((resolve, reject) => {
         const mod = url.startsWith('https') ? https : http;
-        const req = (mod as any).get(url, { timeout: 10_000 }, (res: any) => {
+        const req = (mod as any).get(url, { timeout: 10_000, headers: referer ? { Referer: referer } : undefined }, (res: any) => {
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
-                return resolve(downloadBuffer(res.headers.location as string, redirectsLeft - 1, maxBytes));
+                const nextUrl = new URL(res.headers.location as string, url).toString();
+                return resolve(downloadBuffer(nextUrl, redirectsLeft - 1, maxBytes, referer));
             }
             if (res.statusCode !== 200) {
                 return reject(new Error(`HTTP ${res.statusCode}`));
@@ -148,7 +149,8 @@ export async function buildLinkPreviewOptions(text: string): Promise<LinkPreview
         const title = og['og:title'] || '';
         const description = og['og:description'] || '';
         const canonicalUrl = og['og:url'] || url;
-        const imageUrl = og['og:image'] || '';
+        const rawImageUrl = og['og:image'] || '';
+        const imageUrl = rawImageUrl ? new URL(rawImageUrl, canonicalUrl || url).toString() : '';
 
         if (!title && !imageUrl) {
             logger.warn({ url }, 'buildLinkPreviewOptions: no OG title or image found');
@@ -170,7 +172,7 @@ export async function buildLinkPreviewOptions(text: string): Promise<LinkPreview
         // the WA client resizes for display. We cap download at 2 MB to avoid memory issues.
         if (imageUrl) {
             try {
-                const imgBuf = await downloadBuffer(imageUrl, 3, 2 * 1024 * 1024);
+                const imgBuf = await downloadBuffer(imageUrl, 3, 2 * 1024 * 1024, canonicalUrl || url);
                 previewOpts.jpegThumbnail = imgBuf.toString('base64');
                 logger.info({ url, imageUrl, bytes: imgBuf.length }, 'buildLinkPreviewOptions: thumbnail ready');
             } catch (imgErr) {
