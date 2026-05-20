@@ -80,20 +80,16 @@ export async function preFetchLinkPreview(client: Client, text: string): Promise
                     while (attempts < 12) { // 12 × 2 s = 24 s max (inside the 30 s race)
                         const preview = await getLinkPreview(link);
                         const d = preview?.data;
-                        // Accept thumbnail in either field name (WA Web changes between versions)
+                        // Only exit early once the thumbnail image is ready.
+                        // WA servers fetch page text first and the og:image asynchronously,
+                        // so exiting on title alone would skip waiting for the image.
                         if (d?.thumbnail || d?.jpegThumbnail) {
                             out.status = 'fetched-with-thumbnail';
                             out.attempts = attempts + 1;
                             return out;
                         }
-                        if (d && !d.isLoading && d.title && d.title !== out.url) {
-                            // Real title/description fetched but no image — good enough
-                            out.status = 'fetched-no-thumbnail';
-                            out.attempts = attempts + 1;
-                            return out;
-                        }
                         if (d) {
-                            out.status = d.isLoading ? 'loading' : 'fetched-no-data';
+                            out.status = d.isLoading ? 'loading' : 'fetched-no-thumbnail';
                         } else {
                             out.status = 'no-data';
                         }
