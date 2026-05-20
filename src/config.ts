@@ -22,6 +22,9 @@ export const config = {
   appName: process.env.APP_NAME || 'Sheder',
   frontendUrl: process.env.FRONTEND_URL || 'https://sheder.parties247.co.il',
 
+  // Feature flags
+  waLinkPreviewEnabled: process.env.WA_LINK_PREVIEW_ENABLED !== 'false',
+
   // Stripe
   stripeSecretKey: process.env.STRIPE_SECRET_KEY || '',
   stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',

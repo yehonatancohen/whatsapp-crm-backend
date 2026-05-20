@@ -3,6 +3,7 @@ import { redis } from '../../shared/redis';
 import { logger } from '../../shared/logger';
 import { ClientManager } from '../../accounts/services/ClientManager';
 import { processDueMessages } from './scheduledMessageService';
+import { sendWithPreview } from '../../warmup/linkPreview';
 
 const connection = redis as any;
 
@@ -18,7 +19,7 @@ export function createScheduledMessageWorker() {
         }
         const client = instance.getClient();
         if (!client) throw new Error('WhatsApp client not ready');
-        await client.sendMessage(chatId, body);
+        await sendWithPreview(client, chatId, body);
       };
 
       const count = await processDueMessages(sendFn);

@@ -6,6 +6,7 @@ import { authenticate } from '../shared/middleware/auth';
 import { validate } from '../shared/middleware/validate';
 import { ClientManager } from '../accounts/services/ClientManager';
 import { logger } from '../shared/logger';
+import { sendWithPreview } from '../warmup/linkPreview';
 
 // Convert a WebM/Opus blob (base64) to OGG/Opus (base64) using ffmpeg.
 // WhatsApp Web's prepRawMedia cannot reliably process WebM in headless Chromium
@@ -694,27 +695,23 @@ router.post('/:accountId/:chatId/send', validate(sendSchema), async (req: Reques
       return;
     }
 
-    let sendOptions: Record<string, unknown> = {};
+    const sendOptions: Record<string, unknown> = {};
     if (quotedMessageId) {
       sendOptions.quotedMessageId = quotedMessageId;
     }
 
-    // Let WhatsApp/Web detect OG metadata automatically from the link text.
-    // This keeps behavior identical to normal client sending (no manual image upload).
-    const hasLink = /https?:\/\/[^\s<>"']+/i.test(body);
-    if (hasLink) {
-      sendOptions.linkPreview = true;
-    }
-
-    const msg = await client.sendMessage(chatId, body, sendOptions as any);
+    // sendWithPreview handles OG scraping + thumbnail injection via pupPage.evaluate,
+    // bypassing WhatsApp Web's broken headless getLinkPreview(). Falls back to a
+    // plain client.sendMessage if no URL is present or scraping fails.
+    const msgId = await sendWithPreview(client, chatId, body, sendOptions);
 
     res.json({
-      id: msg.id._serialized,
-      body: msg.body,
-      fromMe: msg.fromMe,
-      timestamp: msg.timestamp,
-      type: msg.type,
-      ack: msg.ack
+      id: msgId ?? '',
+      body,
+      fromMe: true,
+      timestamp: Math.floor(Date.now() / 1000),
+      type: 'chat',
+      ack: 0,
     });
   } catch (err) {
     logger.error({

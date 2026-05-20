@@ -25,6 +25,7 @@ import { Client } from 'whatsapp-web.js';
 import { logger } from '../shared/logger';
 import * as https from 'https';
 import * as http from 'http';
+import { sendWithPreview } from './linkPreview';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -243,37 +244,21 @@ export async function simulateHumanSend(
     // 1. Appear online
     await client.sendPresenceAvailable();
 
-    // 2. If link preview is requested, start building it immediately (server-side).
-    //    Runs in parallel with reading/typing delays so the image download
-    //    completes before we call sendMessage.
-    const linkPreviewPromise = sendOptions?.linkPreview
-        ? buildLinkPreviewOptions(text)
-        : Promise.resolve(null);
-
-    // 3. "Reading" pause — mimic the time a user spends reading a conversation
+    // 2. "Reading" pause — mimic the time a user spends reading a conversation
     //    before they start typing a reply.
     const readingPause = randInt(1_000, 3_000);
     await sleep(readingPause);
 
-    // 4. Start the typing indicator so the other side sees "typing…"
+    // 3. Start the typing indicator so the other side sees "typing…"
     const chat = await client.getChatById(chatId);
     await chat.sendStateTyping();
 
-    // 5. Wait for the realistic typing duration
+    // 4. Wait for the realistic typing duration
     const typingDuration = calculateTypingDelay(text);
     await sleep(typingDuration);
 
-    // 6. Merge server-side preview data into send options
-    const linkPreviewData = await linkPreviewPromise;
-    const finalOptions: Record<string, unknown> = { ...(sendOptions || {}) };
-    if (linkPreviewData) {
-        // Remove the boolean linkPreview flag and inject our own preview fields
-        delete finalOptions.linkPreview;
-        Object.assign(finalOptions, linkPreviewData);
-    }
-
-    // 7. Send the actual message with merged options
-    await chat.sendMessage(text, finalOptions as any);
+    // 5. Send via sendWithPreview which handles OG scraping + pupPage injection
+    await sendWithPreview(client, chatId, text, sendOptions || {});
 }
 
 /**
@@ -281,12 +266,7 @@ export async function simulateHumanSend(
  * Used by campaign and promotion workers where the BullMQ delay in
  * scheduleNextJob controls the rate; no extra latency is added here so the
  * configured messagesPerMinute is honoured accurately even at high rates.
- *
- * When linkPreview is requested, pre-warm the cache in parallel with the
- * presence/typing setup so WhatsApp's servers have time to fetch OG metadata
- * (including the thumbnail image) before sendMessage's internal getLinkPreview
- * call runs. Without this, campaigns and promotions sent without any warm-up
- * time result in a preview card with no thumbnail image.
+ * Link preview building is delegated to sendWithPreview.
  */
 export async function simulateFastSend(
     client: Client,
@@ -294,22 +274,11 @@ export async function simulateFastSend(
     text: string,
     sendOptions?: Record<string, unknown>,
 ): Promise<void> {
-    // Start server-side link preview build immediately (runs concurrently with presence/typing).
-    const linkPreviewPromise = sendOptions?.linkPreview
-        ? buildLinkPreviewOptions(text)
-        : Promise.resolve(null);
-
     await client.sendPresenceAvailable();
     const chat = await client.getChatById(chatId);
     await chat.sendStateTyping();
 
-    // Await the preview data and merge into options
-    const linkPreviewData = await linkPreviewPromise;
-    const finalOptions: Record<string, unknown> = { ...(sendOptions || {}) };
-    if (linkPreviewData) {
-        delete finalOptions.linkPreview;
-        Object.assign(finalOptions, linkPreviewData);
-    }
-
-    await chat.sendMessage(text, finalOptions as any);
+    // Route through sendWithPreview so OG scraping + thumbnail injection is
+    // handled via pupPage.evaluate, bypassing the broken headless getLinkPreview.
+    await sendWithPreview(client, chatId, text, sendOptions || {});
 }
