@@ -6,16 +6,26 @@
  *
  * Flow:
  *   1. Go online  → sendPresenceAvailable()
- *   2. Pre-warm link preview (if requested) — runs in parallel with delays
+ *   2. Build link preview data (if requested) — fetched server-side, runs in parallel
  *   3. "Read" pause → random 1-3 s
  *   4. Typing indicator → sendStateTyping(chatId)
  *   5. Typed delay  → based on message length (~38-42 WPM, randomised)
- *   6. Await link preview ready
- *   7. Send message → sendMessage(chatId, text)
+ *   6. Await link preview data ready
+ *   7. Send message → sendMessage(chatId, text, { ...previewOptions })
+ *
+ * Link preview strategy:
+ *   WhatsApp Web's internal getLinkPreview() returns null in a headless/bot
+ *   context because it requires an active chat to be open in the browser UI.
+ *   We bypass it entirely by fetching OG tags and the og:image ourselves
+ *   on the Node.js side, then injecting jpegThumbnail + metadata directly
+ *   into the sendMessage options. This is the only reliable approach for bots.
  */
 
 import { Client } from 'whatsapp-web.js';
 import { logger } from '../shared/logger';
+import * as https from 'https';
+import * as http from 'http';
+import * as sharp from 'sharp';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -34,113 +44,151 @@ function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// ─── Link Preview Pre-warming ────────────────────────────────────────────────
+// ─── Link Preview (Server-side OG approach) ─────────────────────────────────
+
+const URL_REGEX = /https?:\/\/[^\s<>"']+/i;
+const OG_TAG_REGEX = /<meta\s+(?:property|name)=["'](og:[^"']+)["']\s+content=["']([^"']*)["']\s*\/?>|<meta\s+content=["']([^"']*)["']\s+(?:property|name)=["'](og:[^"']+)["']\s*\/?>|<title[^>]*>([^<]+)<\/title>/gi;
+
+/** Regex-based OG scraper (no cheerio needed) */
+function parseOgTags(html: string): Record<string, string> {
+    const og: Record<string, string> = {};
+    let m;
+    const re = /<meta\s[^>]*>/gi;
+    while ((m = re.exec(html)) !== null) {
+        const tag = m[0];
+        const propMatch = /(?:property|name)=["'](og:[^"']+)["']/i.exec(tag);
+        const contentMatch = /content=["']([^"']*)["']/i.exec(tag);
+        if (propMatch && contentMatch) {
+            og[propMatch[1]] = contentMatch[1];
+        }
+    }
+    if (!og['og:title']) {
+        const titleMatch = /<title[^>]*>([^<]+)<\/title>/i.exec(html);
+        if (titleMatch) og['og:title'] = titleMatch[1].trim();
+    }
+    return og;
+}
+
+/** Download a URL to a Buffer (follows up to 3 redirects). */
+function downloadBuffer(url: string, redirectsLeft = 3): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+        const mod = url.startsWith('https') ? https : http;
+        const req = (mod as any).get(url, { timeout: 10_000 }, (res: any) => {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
+                return resolve(downloadBuffer(res.headers.location as string, redirectsLeft - 1));
+            }
+            if (res.statusCode !== 200) {
+                return reject(new Error(`HTTP ${res.statusCode}`));
+            }
+            const chunks: Buffer[] = [];
+            res.on('data', (c: Buffer) => chunks.push(c));
+            res.on('end', () => resolve(Buffer.concat(chunks)));
+            res.on('error', reject);
+        });
+        req.on('error', reject);
+        req.on('timeout', () => { req.destroy(); reject(new Error('download timeout')); });
+    });
+}
+
+export interface LinkPreviewOptions {
+    /** Set to false so Utils.js skips its broken getLinkPreview() call */
+    linkPreview: false;
+    /** Signals WhatsApp to render this message as a link preview card */
+    preview: true;
+    subtype: 'url';
+    title: string;
+    description: string;
+    canonicalUrl: string;
+    matchedText: string;
+    /** Base64-encoded JPEG thumbnail (no data: prefix) */
+    jpegThumbnail?: string;
+}
 
 /**
- * Pre-fetch link preview data by calling WhatsApp Web's internal getLinkPreview
- * before sendMessage. This triggers WhatsApp's servers to fetch the URL's OG
- * metadata (title, description, thumbnail image) so the data is cached by the
- * time sendMessage's own getLinkPreview call runs.
+ * Build link preview options by fetching OG tags and downloading the
+ * og:image on the Node.js side. Returns options ready to spread into
+ * client.sendMessage(). Bypasses WhatsApp Web's broken headless
+ * getLinkPreview() entirely.
  *
- * Polls until jpegThumbnail is present in the response (meaning the image was
- * fully fetched by WA servers), or until the 30-second timeout is reached.
- * Without this polling, the thumbnail is frequently missing because WA servers
- * fetch the page text first and the image asynchronously.
+ * Returns null if no URL is found in the text or fetching fails.
  */
-export async function preFetchLinkPreview(client: Client, text: string): Promise<void> {
+export async function buildLinkPreviewOptions(text: string): Promise<LinkPreviewOptions | null> {
     try {
-        const page = (client as any).pupPage;
-        if (!page) {
-            logger.warn({ textLen: text.length }, 'preFetchLinkPreview: no pupPage');
-            return;
+        // Find first URL in the message text
+        const urlMatch = URL_REGEX.exec(text);
+        if (!urlMatch) return null;
+        const url = urlMatch[0];
+
+        // Fetch the page HTML with a WhatsApp-like user agent
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 8_000);
+        let html = '';
+        try {
+            const res = await fetch(url, {
+                signal: controller.signal,
+                headers: {
+                    'User-Agent': 'WhatsApp/2.23.20.0',
+                    'Accept': 'text/html,application/xhtml+xml',
+                },
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            html = await res.text();
+        } finally {
+            clearTimeout(timer);
         }
 
-        const result = await Promise.race([
-            page.evaluate(async (messageText: string) => {
-                const out: {
-                    status: string;
-                    url?: string;
-                    error?: string;
-                    attempts?: number;
-                    keys?: string[];
-                    hasData?: boolean;
-                    previewJson?: string;
-                } = { status: 'unknown' };
-                try {
-                    const g = globalThis as any;
-                    const { findLink } = g.window.require('WALinkify');
-                    const link = findLink(messageText);
-                    if (!link) {
-                        out.status = 'no-url-found';
-                        return out;
-                    }
-                    out.url = typeof link === 'string' ? link : link?.href ?? String(link);
+        const og = parseOgTags(html);
+        const title = og['og:title'] || '';
+        const description = og['og:description'] || '';
+        const canonicalUrl = og['og:url'] || url;
+        const imageUrl = og['og:image'] || '';
 
-                    const getLinkPreview = g.window
-                        .require('WAWebLinkPreviewChatAction')
-                        .getLinkPreview;
+        if (!title && !imageUrl) {
+            logger.warn({ url }, 'buildLinkPreviewOptions: no OG title or image found');
+            return null;
+        }
 
-                    // Poll until the thumbnail (jpegThumbnail) is available.
-                    // WA servers fetch page text first and the image asynchronously,
-                    // so the first response often has data but no thumbnail yet.
-                    let attempts = 0;
-                    const sleep = (ms: number) => new Promise((r: any) => setTimeout(r, ms));
-                    while (attempts < 12) { // 12 × 2 s = 24 s max (inside the 30 s race)
-                        const preview = await getLinkPreview(link);
-                        
-                        // Robust unpack: supports both nested `.data` and flat `preview` structures!
-                        const d = preview?.data || preview;
-                        
-                        // Only exit early once the thumbnail image is ready.
-                        // WA servers fetch page text first and the og:image asynchronously,
-                        // so exiting on title alone would skip waiting for the image.
-                        if (d?.thumbnail || d?.jpegThumbnail) {
-                            out.status = 'fetched-with-thumbnail';
-                            out.attempts = attempts + 1;
-                            out.keys = preview ? Object.keys(preview) : [];
-                            out.hasData = true;
-                            try {
-                                out.previewJson = JSON.stringify(preview);
-                            } catch {
-                                out.previewJson = 'circular-or-error';
-                            }
-                            return out;
-                        }
-                        if (d) {
-                            out.status = d.isLoading ? 'loading' : 'fetched-no-thumbnail';
-                            out.hasData = true;
-                        } else {
-                            out.status = 'no-data';
-                            out.hasData = false;
-                        }
-                        attempts++;
-                        await sleep(2_000);
-                    }
-                    // Timed out waiting for thumbnail; sendMessage will use whatever is cached
-                    out.attempts = attempts;
-                    const finalPreview = await getLinkPreview(link);
-                    if (finalPreview) {
-                        out.keys = Object.keys(finalPreview);
-                        try {
-                            out.previewJson = JSON.stringify(finalPreview);
-                        } catch {
-                            out.previewJson = 'circular-or-error';
-                        }
-                    }
-                    return out;
-                } catch (e: any) {
-                    out.status = 'error';
-                    out.error = e?.message || String(e);
-                    return out;
-                }
-            }, text),
-            sleep(30_000).then(() => ({ status: 'timeout-30s' })),
-        ]);
+        const previewOpts: LinkPreviewOptions = {
+            linkPreview: false,
+            preview: true,
+            subtype: 'url',
+            title,
+            description,
+            canonicalUrl,
+            matchedText: url,
+        };
 
-        logger.info({ result, textPreview: text.slice(0, 80) }, 'preFetchLinkPreview: status');
+        // Download og:image and convert to base64 JPEG thumbnail
+        if (imageUrl) {
+            try {
+                const imgBuf = await downloadBuffer(imageUrl);
+                // Resize to ≤300×300 JPEG to keep WhatsApp happy with thumbnail size
+                const sharpLib = (sharp as any).default ?? sharp;
+                const jpegBuf = await sharpLib(imgBuf)
+                    .resize(300, 300, { fit: 'inside', withoutEnlargement: true })
+                    .jpeg({ quality: 80 })
+                    .toBuffer();
+                previewOpts.jpegThumbnail = jpegBuf.toString('base64');
+                logger.info({ url, imageUrl, jpegBytes: jpegBuf.length }, 'buildLinkPreviewOptions: thumbnail ready');
+            } catch (imgErr) {
+                logger.warn({ url, imageUrl, err: (imgErr as Error)?.message }, 'buildLinkPreviewOptions: image download failed, sending preview without thumbnail');
+            }
+        }
+
+        return previewOpts;
     } catch (err) {
-        logger.warn({ err: (err as Error)?.message }, 'preFetchLinkPreview: outer error');
+        logger.warn({ err: (err as Error)?.message }, 'buildLinkPreviewOptions: failed');
+        return null;
     }
+}
+
+/**
+ * @deprecated Use buildLinkPreviewOptions instead.
+ * Kept for backward compatibility — now a no-op since we no longer poll
+ * WhatsApp Web's broken getLinkPreview().
+ */
+export async function preFetchLinkPreview(_client: Client, _text: string): Promise<void> {
+    // No-op: replaced by buildLinkPreviewOptions
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
@@ -190,12 +238,12 @@ export async function simulateHumanSend(
     // 1. Appear online
     await client.sendPresenceAvailable();
 
-    // 2. If link preview is requested, start pre-fetching immediately.
-    //    This runs in parallel with reading/typing delays, giving WhatsApp's
-    //    servers 4-28 s to fetch the URL's OG metadata before sendMessage needs it.
-    const linkPreviewReady = sendOptions?.linkPreview
-        ? preFetchLinkPreview(client, text)
-        : Promise.resolve();
+    // 2. If link preview is requested, start building it immediately (server-side).
+    //    Runs in parallel with reading/typing delays so the image download
+    //    completes before we call sendMessage.
+    const linkPreviewPromise = sendOptions?.linkPreview
+        ? buildLinkPreviewOptions(text)
+        : Promise.resolve(null);
 
     // 3. "Reading" pause — mimic the time a user spends reading a conversation
     //    before they start typing a reply.
@@ -210,11 +258,17 @@ export async function simulateHumanSend(
     const typingDuration = calculateTypingDelay(text);
     await sleep(typingDuration);
 
-    // 6. Ensure link preview data (including thumbnail) is cached before sending
-    await linkPreviewReady;
+    // 6. Merge server-side preview data into send options
+    const linkPreviewData = await linkPreviewPromise;
+    const finalOptions: Record<string, unknown> = { ...(sendOptions || {}) };
+    if (linkPreviewData) {
+        // Remove the boolean linkPreview flag and inject our own preview fields
+        delete finalOptions.linkPreview;
+        Object.assign(finalOptions, linkPreviewData);
+    }
 
-    // 7. Send the actual message (pass optional sendOptions e.g. { linkPreview: true })
-    await chat.sendMessage(text, sendOptions);
+    // 7. Send the actual message with merged options
+    await chat.sendMessage(text, finalOptions as any);
 }
 
 /**
@@ -235,18 +289,22 @@ export async function simulateFastSend(
     text: string,
     sendOptions?: Record<string, unknown>,
 ): Promise<void> {
-    // Start link preview warm-up immediately so WA servers can fetch OG data
-    // (including thumbnail) while we're setting up presence — both run concurrently.
-    const linkPreviewReady = sendOptions?.linkPreview
-        ? preFetchLinkPreview(client, text)
-        : Promise.resolve();
+    // Start server-side link preview build immediately (runs concurrently with presence/typing).
+    const linkPreviewPromise = sendOptions?.linkPreview
+        ? buildLinkPreviewOptions(text)
+        : Promise.resolve(null);
 
     await client.sendPresenceAvailable();
     const chat = await client.getChatById(chatId);
     await chat.sendStateTyping();
 
-    // Ensure preview data (with thumbnail) is cached before the send triggers getLinkPreview
-    await linkPreviewReady;
+    // Await the preview data and merge into options
+    const linkPreviewData = await linkPreviewPromise;
+    const finalOptions: Record<string, unknown> = { ...(sendOptions || {}) };
+    if (linkPreviewData) {
+        delete finalOptions.linkPreview;
+        Object.assign(finalOptions, linkPreviewData);
+    }
 
-    await chat.sendMessage(text, sendOptions);
+    await chat.sendMessage(text, finalOptions as any);
 }
