@@ -34,18 +34,18 @@ function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// ─── Link Preview Pre-warming ───────────────────────────────────────────────
+// ─── Link Preview Pre-warming ────────────────────────────────────────────────
 
 /**
- * Pre-fetch link preview data by calling WhatsApp Web's internal link preview
- * Store before the actual sendMessage. This gives WA servers time to fetch OG
- * metadata (title, description, thumbnail) so it's cached when sendMessage
- * calls the same API internally.
+ * Pre-fetch link preview data by calling WhatsApp Web's internal getLinkPreview
+ * before sendMessage. This triggers WhatsApp's servers to fetch the URL's OG
+ * metadata (title, description, thumbnail image) so the data is cached by the
+ * time sendMessage's own getLinkPreview call runs.
  *
- * WA Web changes these Store APIs between versions, so we try multiple paths
- * and fall back to a plain URL regex if the Store URL finder isn't available.
- *
- * Runs with a 10-second timeout to avoid blocking the send indefinitely.
+ * Polls until jpegThumbnail is present in the response (meaning the image was
+ * fully fetched by WA servers), or until the 30-second timeout is reached.
+ * Without this polling, the thumbnail is frequently missing because WA servers
+ * fetch the page text first and the image asynchronously.
  */
 export async function preFetchLinkPreview(client: Client, text: string): Promise<void> {
     try {
@@ -57,10 +57,8 @@ export async function preFetchLinkPreview(client: Client, text: string): Promise
 
         const result = await Promise.race([
             page.evaluate(async (messageText: string) => {
-                const out: { status: string; url?: string; error?: string } = { status: 'unknown' };
+                const out: { status: string; url?: string; error?: string; attempts?: number } = { status: 'unknown' };
                 try {
-                    // Use the same APIs that whatsapp-web.js Utils.js sendMessage uses internally.
-                    // Access via globalThis to avoid TypeScript "window not found" in Node context.
                     const g = globalThis as any;
                     const { findLink } = g.window.require('WALinkify');
                     const link = findLink(messageText);
@@ -70,11 +68,33 @@ export async function preFetchLinkPreview(client: Client, text: string): Promise
                     }
                     out.url = typeof link === 'string' ? link : link?.href ?? String(link);
 
-                    const preview = await g.window
+                    const getLinkPreview = g.window
                         .require('WAWebLinkPreviewChatAction')
-                        .getLinkPreview(link);
+                        .getLinkPreview;
 
-                    out.status = preview?.data ? 'fetched' : 'no-data';
+                    // Poll until the thumbnail (jpegThumbnail) is available.
+                    // WA servers fetch page text first and the image asynchronously,
+                    // so the first response often has data but no thumbnail yet.
+                    let attempts = 0;
+                    const sleep = (ms: number) => new Promise((r: any) => setTimeout(r, ms));
+                    while (attempts < 12) { // 12 × 2 s = 24 s max (inside the 30 s race)
+                        const preview = await getLinkPreview(link);
+                        if (preview?.data?.jpegThumbnail) {
+                            out.status = 'fetched-with-thumbnail';
+                            out.attempts = attempts + 1;
+                            return out;
+                        }
+                        if (preview?.data) {
+                            // Data arrived but no thumbnail yet — keep polling
+                            out.status = 'fetched-no-thumbnail';
+                        } else {
+                            out.status = 'no-data';
+                        }
+                        attempts++;
+                        await sleep(2_000);
+                    }
+                    // Timed out waiting for thumbnail; sendMessage will use whatever is cached
+                    out.attempts = attempts;
                     return out;
                 } catch (e: any) {
                     out.status = 'error';
@@ -82,7 +102,7 @@ export async function preFetchLinkPreview(client: Client, text: string): Promise
                     return out;
                 }
             }, text),
-            sleep(10_000).then(() => ({ status: 'timeout-10s' })),
+            sleep(30_000).then(() => ({ status: 'timeout-30s' })),
         ]);
 
         logger.info({ result, textPreview: text.slice(0, 80) }, 'preFetchLinkPreview: status');
@@ -158,7 +178,7 @@ export async function simulateHumanSend(
     const typingDuration = calculateTypingDelay(text);
     await sleep(typingDuration);
 
-    // 6. Ensure link preview data is cached before sending
+    // 6. Ensure link preview data (including thumbnail) is cached before sending
     await linkPreviewReady;
 
     // 7. Send the actual message (pass optional sendOptions e.g. { linkPreview: true })
@@ -170,6 +190,12 @@ export async function simulateHumanSend(
  * Used by campaign and promotion workers where the BullMQ delay in
  * scheduleNextJob controls the rate; no extra latency is added here so the
  * configured messagesPerMinute is honoured accurately even at high rates.
+ *
+ * When linkPreview is requested, pre-warm the cache in parallel with the
+ * presence/typing setup so WhatsApp's servers have time to fetch OG metadata
+ * (including the thumbnail image) before sendMessage's internal getLinkPreview
+ * call runs. Without this, campaigns and promotions sent without any warm-up
+ * time result in a preview card with no thumbnail image.
  */
 export async function simulateFastSend(
     client: Client,
@@ -177,8 +203,18 @@ export async function simulateFastSend(
     text: string,
     sendOptions?: Record<string, unknown>,
 ): Promise<void> {
+    // Start link preview warm-up immediately so WA servers can fetch OG data
+    // (including thumbnail) while we're setting up presence — both run concurrently.
+    const linkPreviewReady = sendOptions?.linkPreview
+        ? preFetchLinkPreview(client, text)
+        : Promise.resolve();
+
     await client.sendPresenceAvailable();
     const chat = await client.getChatById(chatId);
     await chat.sendStateTyping();
+
+    // Ensure preview data (with thumbnail) is cached before the send triggers getLinkPreview
+    await linkPreviewReady;
+
     await chat.sendMessage(text, sendOptions);
 }
