@@ -32,7 +32,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libasound2 \
     ca-certificates \
     openssl \
-    libvips-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Tell Puppeteer to use the system Chromium instead of downloading its own

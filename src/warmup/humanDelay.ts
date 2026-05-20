@@ -25,7 +25,6 @@ import { Client } from 'whatsapp-web.js';
 import { logger } from '../shared/logger';
 import * as https from 'https';
 import * as http from 'http';
-import * as sharp from 'sharp';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -69,19 +68,27 @@ function parseOgTags(html: string): Record<string, string> {
     return og;
 }
 
-/** Download a URL to a Buffer (follows up to 3 redirects). */
-function downloadBuffer(url: string, redirectsLeft = 3): Promise<Buffer> {
+/** Download a URL to a Buffer (follows up to 3 redirects, optional maxBytes cap). */
+function downloadBuffer(url: string, redirectsLeft = 3, maxBytes = 5 * 1024 * 1024): Promise<Buffer> {
     return new Promise((resolve, reject) => {
         const mod = url.startsWith('https') ? https : http;
         const req = (mod as any).get(url, { timeout: 10_000 }, (res: any) => {
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
-                return resolve(downloadBuffer(res.headers.location as string, redirectsLeft - 1));
+                return resolve(downloadBuffer(res.headers.location as string, redirectsLeft - 1, maxBytes));
             }
             if (res.statusCode !== 200) {
                 return reject(new Error(`HTTP ${res.statusCode}`));
             }
             const chunks: Buffer[] = [];
-            res.on('data', (c: Buffer) => chunks.push(c));
+            let total = 0;
+            res.on('data', (c: Buffer) => {
+                total += c.length;
+                if (total > maxBytes) {
+                    req.destroy();
+                    return reject(new Error(`Image too large (>${maxBytes} bytes)`));
+                }
+                chunks.push(c);
+            });
             res.on('end', () => resolve(Buffer.concat(chunks)));
             res.on('error', reject);
         });
@@ -158,18 +165,14 @@ export async function buildLinkPreviewOptions(text: string): Promise<LinkPreview
             matchedText: url,
         };
 
-        // Download og:image and convert to base64 JPEG thumbnail
+        // Download og:image and pass as base64 thumbnail.
+        // WhatsApp accepts JPEG/PNG thumbnails directly — no resize needed server-side;
+        // the WA client resizes for display. We cap download at 2 MB to avoid memory issues.
         if (imageUrl) {
             try {
-                const imgBuf = await downloadBuffer(imageUrl);
-                // Resize to ≤300×300 JPEG to keep WhatsApp happy with thumbnail size
-                const sharpLib = (sharp as any).default ?? sharp;
-                const jpegBuf = await sharpLib(imgBuf)
-                    .resize(300, 300, { fit: 'inside', withoutEnlargement: true })
-                    .jpeg({ quality: 80 })
-                    .toBuffer();
-                previewOpts.jpegThumbnail = jpegBuf.toString('base64');
-                logger.info({ url, imageUrl, jpegBytes: jpegBuf.length }, 'buildLinkPreviewOptions: thumbnail ready');
+                const imgBuf = await downloadBuffer(imageUrl, 3, 2 * 1024 * 1024);
+                previewOpts.jpegThumbnail = imgBuf.toString('base64');
+                logger.info({ url, imageUrl, bytes: imgBuf.length }, 'buildLinkPreviewOptions: thumbnail ready');
             } catch (imgErr) {
                 logger.warn({ url, imageUrl, err: (imgErr as Error)?.message }, 'buildLinkPreviewOptions: image download failed, sending preview without thumbnail');
             }
