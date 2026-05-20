@@ -6,7 +6,6 @@ import { authenticate } from '../shared/middleware/auth';
 import { validate } from '../shared/middleware/validate';
 import { ClientManager } from '../accounts/services/ClientManager';
 import { logger } from '../shared/logger';
-import { buildLinkPreviewOptions } from '../warmup/humanDelay';
 
 // Convert a WebM/Opus blob (base64) to OGG/Opus (base64) using ffmpeg.
 // WhatsApp Web's prepRawMedia cannot reliably process WebM in headless Chromium
@@ -700,13 +699,11 @@ router.post('/:accountId/:chatId/send', validate(sendSchema), async (req: Reques
       sendOptions.quotedMessageId = quotedMessageId;
     }
 
-    // Build link preview data server-side (fetches OG tags + downloads og:image).
-    // This bypasses WhatsApp Web's broken headless getLinkPreview() which always
-    // returns null in a bot context. Instead we inject jpegThumbnail + metadata
-    // directly into sendMessage options.
-    const linkPreviewData = await buildLinkPreviewOptions(body);
-    if (linkPreviewData) {
-      Object.assign(sendOptions, linkPreviewData);
+    // Let WhatsApp/Web detect OG metadata automatically from the link text.
+    // This keeps behavior identical to normal client sending (no manual image upload).
+    const hasLink = /https?:\/\/[^\s<>"']+/i.test(body);
+    if (hasLink) {
+      sendOptions.linkPreview = true;
     }
 
     const msg = await client.sendMessage(chatId, body, sendOptions as any);
