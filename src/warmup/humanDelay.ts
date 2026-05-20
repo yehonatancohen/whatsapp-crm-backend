@@ -79,14 +79,21 @@ export async function preFetchLinkPreview(client: Client, text: string): Promise
                     const sleep = (ms: number) => new Promise((r: any) => setTimeout(r, ms));
                     while (attempts < 12) { // 12 × 2 s = 24 s max (inside the 30 s race)
                         const preview = await getLinkPreview(link);
-                        if (preview?.data?.jpegThumbnail) {
+                        const d = preview?.data;
+                        // Accept thumbnail in either field name (WA Web changes between versions)
+                        if (d?.thumbnail || d?.jpegThumbnail) {
                             out.status = 'fetched-with-thumbnail';
                             out.attempts = attempts + 1;
                             return out;
                         }
-                        if (preview?.data) {
-                            // Data arrived but no thumbnail yet — keep polling
+                        if (d && !d.isLoading && d.title && d.title !== out.url) {
+                            // Real title/description fetched but no image — good enough
                             out.status = 'fetched-no-thumbnail';
+                            out.attempts = attempts + 1;
+                            return out;
+                        }
+                        if (d) {
+                            out.status = d.isLoading ? 'loading' : 'fetched-no-data';
                         } else {
                             out.status = 'no-data';
                         }
