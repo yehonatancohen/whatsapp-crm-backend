@@ -229,6 +229,24 @@ export async function startCampaign(campaignId: string, userId: string, role: st
     throw new ConflictError('Only DRAFT campaigns can be started');
   }
 
+  // Validate campaign has sender accounts configured
+  if (!campaign.accountIds || campaign.accountIds.length === 0) {
+    throw new ValidationError('Campaign must have at least one sender account configured');
+  }
+
+  // Validate at least one of the selected accounts is currently connected
+  const connectedAccountCount = await prisma.account.count({
+    where: {
+      id: { in: campaign.accountIds },
+      status: 'AUTHENTICATED',
+    },
+  });
+  if (connectedAccountCount === 0) {
+    throw new ValidationError(
+      'None of the selected accounts are connected to WhatsApp. Please reconnect at least one account before starting the campaign.',
+    );
+  }
+
   let totalMessages: number;
 
   if (campaign.type === 'GROUP_MESSAGE') {

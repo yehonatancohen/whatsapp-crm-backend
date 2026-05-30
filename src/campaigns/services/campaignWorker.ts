@@ -55,29 +55,35 @@ export function createCampaignProcessorWorker(): Worker {
       });
 
       if (!message) {
-        // No more pending messages — campaign is complete
+        // No more pending messages — determine final status
+        // If nothing was ever sent, mark as FAILED so the user knows to investigate
+        const allFailed = campaign.sentCount === 0 && campaign.totalMessages > 0;
+        const finalStatus = allFailed ? 'FAILED' : 'COMPLETED';
+
         await prisma.campaign.update({
           where: { id: campaignId },
           data: {
-            status: 'COMPLETED',
+            status: finalStatus,
             completedAt: new Date(),
           },
         });
 
         await prisma.activityLog.create({
           data: {
-            type: 'CAMPAIGN_COMPLETED',
-            message: `Campaign "${campaign.name}" completed`,
+            type: allFailed ? 'CAMPAIGN_FAILED' : 'CAMPAIGN_COMPLETED',
+            message: allFailed
+              ? `Campaign "${campaign.name}" failed — all ${campaign.failedCount} messages could not be sent`
+              : `Campaign "${campaign.name}" completed`,
             userId: campaign.userId,
           },
         });
 
         emitToUser(campaign.userId, 'campaign:status', {
           campaignId,
-          status: 'COMPLETED',
+          status: finalStatus,
         });
 
-        logger.info({ campaignId }, 'Campaign completed — all messages processed');
+        logger.info({ campaignId, finalStatus }, `Campaign ${finalStatus.toLowerCase()} — all messages processed`);
         return;
       }
 
