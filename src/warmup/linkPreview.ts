@@ -30,11 +30,18 @@ interface PreviewData {
 }
 
 export async function buildPreview(url: string): Promise<PreviewData> {
-  const { result } = await ogs({
-    url,
-    timeout: 5,
-    fetchOptions: { headers: { 'user-agent': 'WhatsApp/2.24.0' } },
-  });
+  let result: Awaited<ReturnType<typeof ogs>>['result'];
+  try {
+    ({ result } = await ogs({
+      url,
+      timeout: 5,
+      fetchOptions: { headers: { 'user-agent': 'WhatsApp/2.24.0' } },
+    }));
+  } catch (e: any) {
+    // ogs v6 throws { result, error: string } rather than an Error instance
+    const msg: string = e?.error ?? e?.message ?? JSON.stringify(e);
+    throw new Error(`OGS failed: ${msg}`);
+  }
 
   let thumbnail: string | null = null;
   let thumbnailWidth = 200;
@@ -49,7 +56,7 @@ export async function buildPreview(url: string): Promise<PreviewData> {
         maxContentLength: 5 * 1024 * 1024,
       });
       const resized = await sharp(Buffer.from(img.data))
-        .resize(300, 300, { fit: 'inside' })
+        .resize(200, 200, { fit: 'inside' })
         .jpeg({ quality: 70 })
         .toBuffer();
       const meta = await sharp(resized).metadata();
@@ -150,27 +157,48 @@ export async function sendWithPreview(
         const wid = (globalThis as any)
           .require('WAWebWidFactory')
           .createWid(chatId);
+        // Use the same fallback as WWebJS.getChat: findOrCreateLatestChat
         const chat =
           (globalThis as any).require('WAWebCollections').Chat.get(wid) ??
-          (await (globalThis as any).require('WAWebCollections').Chat.find(wid));
+          (await (globalThis as any).require('WAWebFindChatAction').findOrCreateLatestChat(wid))?.chat;
         if (!chat) throw new Error(`[linkPreview] chat not found: ${chatId}`);
 
-        // Pass preview fields as flat options with linkPreview:false so
-        // window.WWebJS.sendMessage skips its broken headless getLinkPreview()
-        // and uses our server-generated metadata directly. Passthrough opts
-        // (e.g. quotedMessageId) are merged in so they're honoured too.
+        // getLinkPreview expects a link object from findLink(), not a raw URL string.
+        // Call it the same way WWebJS.sendMessage does internally.
+        const { findLink } = (globalThis as any).require('WALinkify');
+        const linkObj = findLink(text);
+        const mod = (globalThis as any).require('WAWebLinkPreviewChatAction');
+
+        const previewDataPromise: Promise<any> = linkObj
+          ? mod.getLinkPreview(linkObj).catch(() => null)
+          : Promise.resolve(null);
+        const timeoutPromise = new Promise<null>(r => setTimeout(() => r(null), 10000));
+        const realPreview = await Promise.race([previewDataPromise, timeoutPromise]);
+
+        if (realPreview) {
+          const pd = realPreview.data?.matchedText ? realPreview.data : realPreview;
+          // Use WhatsApp's own result — thumbnail is server-generated and correctly formatted
+          const res = await (globalThis as any).WWebJS.sendMessage(chat, text, {
+            ...passthroughOpts,
+            ...pd,
+            preview: true,
+            subtype: 'url',
+            linkPreview: false, // prevent double getLinkPreview call
+          });
+          return (res as any)?.id?._serialized ?? null;
+        }
+
+        // Fallback: inject OGS fields without thumbnail (server rejects raw embedded bytes)
         const res = await (globalThis as any).WWebJS.sendMessage(chat, text, {
           ...passthroughOpts,
-          linkPreview: false,
           preview: true,
           subtype: 'url',
           title: preview.title,
           description: preview.description,
-          canonicalUrl: preview.canonicalUrl,
+          canonicalUrl: preview.canonicalUrl || preview.matchedText,
           matchedText: preview.matchedText,
-          jpegThumbnail: preview.thumbnail ?? undefined,
-          richPreviewType: preview.richPreviewType,
-          doNotPlayInline: preview.doNotPlayInline,
+          richPreviewType: 0,
+          doNotPlayInline: true,
         });
         return (res as any)?.id?._serialized ?? null;
       },
