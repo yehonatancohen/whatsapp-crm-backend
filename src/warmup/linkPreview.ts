@@ -188,7 +188,7 @@ export async function sendWithPreview(
           return (res as any)?.id?._serialized ?? null;
         }
 
-        // Fallback: inject OGS fields without thumbnail (server rejects raw embedded bytes)
+        // Fallback: inject OGS fields with thumbnail (base64 JPEG, no data: prefix)
         const res = await (globalThis as any).WWebJS.sendMessage(chat, text, {
           ...passthroughOpts,
           preview: true,
@@ -199,6 +199,7 @@ export async function sendWithPreview(
           matchedText: preview.matchedText,
           richPreviewType: 0,
           doNotPlayInline: true,
+          ...(preview.thumbnail ? { jpegThumbnail: preview.thumbnail } : {}),
         });
         return (res as any)?.id?._serialized ?? null;
       },

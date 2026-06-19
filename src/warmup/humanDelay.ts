@@ -275,8 +275,14 @@ export async function simulateFastSend(
     sendOptions?: Record<string, unknown>,
 ): Promise<void> {
     await client.sendPresenceAvailable();
-    const chat = await client.getChatById(chatId);
-    await chat.sendStateTyping();
+    // getChatById returns null for contacts with no existing chat history;
+    // skip the typing indicator rather than crashing the send.
+    try {
+        const chat = await client.getChatById(chatId);
+        if (chat) await chat.sendStateTyping();
+    } catch (_e) {
+        // no-op: typing indicator is cosmetic, don't abort the send
+    }
 
     // Route through sendWithPreview so OG scraping + thumbnail injection is
     // handled via pupPage.evaluate, bypassing the broken headless getLinkPreview.
