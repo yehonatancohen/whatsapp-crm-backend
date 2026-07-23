@@ -139,7 +139,7 @@ export async function sendWithPreview(
   const { linkPreview: _ignored, ...passthroughOpts } = opts;
 
   try {
-    const id: string | null = await pupPage.evaluate(
+    const result: { id: string | null; branch: 'wa-native' | 'ogs-fallback'; hadThumbnail?: boolean } = await pupPage.evaluate(
       // Arrow function is NOT serialisable across pupPage.evaluate boundaries;
       // use a plain function expression so Puppeteer can stringify it.
       async function ({
@@ -185,7 +185,7 @@ export async function sendWithPreview(
             subtype: 'url',
             linkPreview: false, // prevent double getLinkPreview call
           });
-          return (res as any)?.id?._serialized ?? null;
+          return { id: (res as any)?.id?._serialized ?? null, branch: 'wa-native' as const };
         }
 
         // Fallback: inject OGS fields with thumbnail (base64 JPEG, no data: prefix)
@@ -201,15 +201,23 @@ export async function sendWithPreview(
           doNotPlayInline: true,
           ...(preview.thumbnail ? { jpegThumbnail: preview.thumbnail } : {}),
         });
-        return (res as any)?.id?._serialized ?? null;
+        return {
+          id: (res as any)?.id?._serialized ?? null,
+          branch: 'ogs-fallback' as const,
+          hadThumbnail: preview.thumbnail !== null,
+        };
       },
       { chatId, text, preview, passthroughOpts },
     );
-    return id;
+    logger.info(
+      { chatId, url, ...result },
+      '[linkPreview] sent via pupPage.evaluate',
+    );
+    return result.id;
   } catch (e) {
     logger.warn(
-      { chatId, err: (e as Error).message },
-      '[linkPreview] inject failed, sending plain',
+      { chatId, url, err: (e as Error).message, stack: (e as Error).stack },
+      '[linkPreview] inject failed, sending plain (no preview will show)',
     );
     const m = await client.sendMessage(chatId, text, opts as any);
     return m?.id?._serialized ?? null;
