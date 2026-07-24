@@ -1,10 +1,11 @@
 /**
  * sendWithPreview — WhatsApp link preview helper
  *
- * Scrapes OG metadata in Node (not in the browser), resizes the og:image to a
- * JPEG thumbnail via sharp, then injects all preview fields directly into
- * window.WWebJS.sendMessage via pupPage.evaluate, bypassing WhatsApp Web's
- * broken headless getLinkPreview() path entirely.
+ * Scrapes OG metadata in Node (not in the browser) as the always-available
+ * source of title/description/canonicalUrl. Also races WA's own
+ * getLinkPreview() (server-side scrape+upload) for a real, renderable image
+ * thumbnail — it doesn't always succeed, so its result is only used for the
+ * thumbnail-specific fields, never to override our own scraped text.
  *
  * Enable/disable via WA_LINK_PREVIEW_ENABLED env var (default: true).
  */
@@ -139,7 +140,7 @@ export async function sendWithPreview(
   const { linkPreview: _ignored, ...passthroughOpts } = opts;
 
   try {
-    const result: { id: string | null; hadThumbnail: boolean } = await pupPage.evaluate(
+    const result: { id: string | null; hadRealThumb: boolean; hadFallbackThumb: boolean } = await pupPage.evaluate(
       // Arrow function is NOT serialisable across pupPage.evaluate boundaries;
       // use a plain function expression so Puppeteer can stringify it.
       async function ({
@@ -170,30 +171,67 @@ export async function sendWithPreview(
           (await (globalThis as any).require('WAWebFindChatAction').findOrCreateLatestChat(wid))?.chat;
         if (!chat) throw new Error(`[linkPreview] chat not found: ${chatId}`);
 
-        // WA's own headless getLinkPreview() never resolves inside Puppeteer
-        // (confirmed: always hits its own internal timeout) — go straight to
-        // the OGS-scraped fields, which are always complete and correct.
-        // NOTE: the jpegThumbnail image itself will not render in WhatsApp's UI —
-        // the visible preview image requires WA's server-side link-scrape upload
-        // (bucket t62.36144-24), which is only reachable through the same
-        // getLinkPreview() call that never resolves headlessly. Title/description/
-        // canonicalUrl render correctly without it.
-        const res = await (globalThis as any).WWebJS.sendMessage(chat, text, {
-          ...passthroughOpts,
-          preview: true,
-          subtype: 'url',
+        // WA's own getLinkPreview() runs a server-side scrape+upload that, when it
+        // succeeds, returns a real image thumbnail (mediaKey/thumbnailDirectPath
+        // pointing at WA's t62 media bucket) that actually renders in the UI — our
+        // own jpegThumbnail injection never does, since we have no way to upload to
+        // that bucket ourselves. It doesn't always succeed (can return a bare
+        // domain-only placeholder, or in this account's recent history, hang until
+        // its own internal fallback fires) — race it against a timeout and use its
+        // result only for the thumbnail-specific fields; title/description/
+        // canonicalUrl always come from our own OGS scrape, which is complete and
+        // correct even when WA's own scrape gives back a bare placeholder.
+        const { findLink } = (globalThis as any).require('WALinkify');
+        const linkObj = findLink(text);
+        const mod = (globalThis as any).require('WAWebLinkPreviewChatAction');
+
+        const previewDataPromise: Promise<any> = linkObj
+          ? mod.getLinkPreview(linkObj).catch(() => null)
+          : Promise.resolve(null);
+        const timeoutPromise = new Promise<null>((r) => setTimeout(() => r(null), 10000));
+        const realPreview = await Promise.race([previewDataPromise, timeoutPromise]);
+        const pd = realPreview?.data?.matchedText ? realPreview.data : realPreview;
+
+        const THUMB_KEYS = [
+          'thumbnailDirectPath',
+          'mediaKey',
+          'mediaKeyTimestamp',
+          'thumbnailSha256',
+          'thumbnailEncSha256',
+          'thumbnailHQ',
+          'thumbnailWidth',
+          'thumbnailHeight',
+        ] as const;
+        const realThumbFields = Object.fromEntries(
+          THUMB_KEYS.map((k) => [k, pd?.[k]]).filter(([, v]) => v !== null && v !== undefined),
+        );
+        const hasRealThumb = !!realThumbFields.thumbnailDirectPath;
+
+        const merged = {
           title: preview.title,
           description: preview.description,
           canonicalUrl: preview.canonicalUrl || preview.matchedText,
           matchedText: preview.matchedText,
           richPreviewType: 0,
           doNotPlayInline: true,
-          ...(preview.thumbnail ? { jpegThumbnail: base64ToBytes(preview.thumbnail) } : {}),
+          ...(hasRealThumb
+            ? realThumbFields
+            : preview.thumbnail
+              ? { jpegThumbnail: base64ToBytes(preview.thumbnail) }
+              : {}),
+        };
+
+        const res = await (globalThis as any).WWebJS.sendMessage(chat, text, {
+          ...passthroughOpts,
+          ...merged,
+          preview: true,
+          subtype: 'url',
           linkPreview: false, // prevent double getLinkPreview call
         });
         return {
           id: (res as any)?.id?._serialized ?? null,
-          hadThumbnail: preview.thumbnail !== null,
+          hadRealThumb: hasRealThumb,
+          hadFallbackThumb: !hasRealThumb && preview.thumbnail !== null,
         };
       },
       { chatId, text, preview, passthroughOpts },
