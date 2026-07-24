@@ -198,32 +198,69 @@ export class WhatsAppInstance {
     if (!this.client || this.status !== 'AUTHENTICATED') return [];
 
     const myId = this.client.info?.wid?._serialized;
+    const pupPage = (this.client as any).pupPage;
+    if (!pupPage) return [];
 
     try {
-      // Primary approach: use the official getChats() API (works in all wweb.js versions)
-      const chats = await this.client.getChats();
-      const out: Array<{ id: string; name: string; participantsCount: number; isAdmin: boolean }> = [];
+      // client.getChats() calls WWebJS's getChatModel() internally, which awaits
+      // groupMetadata.update(chatWid) (a network round-trip) for every group chat
+      // inside a single Promise.all. If that update throws for even one group —
+      // observed as a minified internal WA error with no useful message — the
+      // whole Promise.all rejects and getChats() returns nothing for every group.
+      //
+      // Fix: read the Chat collection directly (same approach already used by
+      // /chat/conversations for the identical class of failure) and use whatever
+      // group metadata is already cached client-side, isolating each chat in its
+      // own try/catch so one bad group can't wipe out the rest of the list.
+      const out: Array<{ id: string; name: string; participantsCount: number; isAdmin: boolean }> =
+        await Promise.race([
+          pupPage.evaluate(
+            (myId: string | undefined) => {
+              /* eslint-disable @typescript-eslint/no-explicit-any */
+              const g = globalThis as any;
+              let ChatCollection: any;
+              try {
+                ChatCollection = g.window.require('WAWebCollections').Chat;
+              } catch {
+                const S = g.window?.Store ?? g.Store;
+                ChatCollection = S?.Chat;
+              }
+              if (!ChatCollection) return [];
 
-      for (const chat of chats) {
-        if (!chat.isGroup) continue;
-        const sid = chat.id._serialized;
-        if (!sid) continue;
-        const groupChat = chat as any;
-        const participants: any[] =
-          groupChat.participants?.getModels?.() ??
-          groupChat.participants?._models ??
-          (Array.isArray(groupChat.participants) ? groupChat.participants :
-            groupChat.groupMetadata?.participants?.getModels?.() ??
-            groupChat.groupMetadata?.participants?._models ??
-            (Array.isArray(groupChat.groupMetadata?.participants) ? groupChat.groupMetadata.participants : []));
-        const me = participants.find((p: any) => p.id?._serialized === myId);
-        out.push({
-          id: sid,
-          name: chat.name || chat.id.user || sid,
-          participantsCount: participants.length,
-          isAdmin: me?.isAdmin === true || me?.isSuperAdmin === true,
-        });
-      }
+              const models: any[] = ChatCollection.getModelsArray?.() ?? ChatCollection._models ?? [];
+              const result: Array<{ id: string; name: string; participantsCount: number; isAdmin: boolean }> = [];
+
+              for (const chat of models) {
+                try {
+                  if (!chat.groupMetadata) continue;
+                  const sid: string = chat.id?._serialized ?? '';
+                  if (!sid) continue;
+
+                  const participants: any[] =
+                    chat.groupMetadata.participants?.getModels?.() ??
+                    chat.groupMetadata.participants?._models ??
+                    (Array.isArray(chat.groupMetadata.participants) ? chat.groupMetadata.participants : []);
+                  const me = participants.find((p: any) => p.id?._serialized === myId);
+
+                  result.push({
+                    id: sid,
+                    name: chat.name || chat.formattedTitle || chat.id?.user || sid,
+                    participantsCount: participants.length,
+                    isAdmin: me?.isAdmin === true || me?.isSuperAdmin === true,
+                  });
+                } catch {
+                  // skip this one chat, keep going
+                }
+              }
+
+              return result;
+            },
+            myId,
+          ),
+          new Promise<never>((_, rej) =>
+            setTimeout(() => rej(new Error('getGroups evaluate timeout')), 15_000),
+          ),
+        ]);
 
       return out;
     } catch (err) {
