@@ -139,7 +139,7 @@ export async function sendWithPreview(
   const { linkPreview: _ignored, ...passthroughOpts } = opts;
 
   try {
-    const result: { id: string | null; branch: 'wa-native' | 'ogs-fallback'; hadThumbnail?: boolean } & Record<string, unknown> = await pupPage.evaluate(
+    const result: { id: string | null; hadThumbnail: boolean } = await pupPage.evaluate(
       // Arrow function is NOT serialisable across pupPage.evaluate boundaries;
       // use a plain function expression so Puppeteer can stringify it.
       async function ({
@@ -170,57 +170,14 @@ export async function sendWithPreview(
           (await (globalThis as any).require('WAWebFindChatAction').findOrCreateLatestChat(wid))?.chat;
         if (!chat) throw new Error(`[linkPreview] chat not found: ${chatId}`);
 
-        // getLinkPreview expects a link object from findLink(), not a raw URL string.
-        // Call it the same way WWebJS.sendMessage does internally.
-        const { findLink } = (globalThis as any).require('WALinkify');
-        const linkObj = findLink(text);
-        const mod = (globalThis as any).require('WAWebLinkPreviewChatAction');
-
-        const previewDataPromise: Promise<any> = linkObj
-          ? mod.getLinkPreview(linkObj).catch(() => null)
-          : Promise.resolve(null);
-        const timeoutPromise = new Promise<null>(r => setTimeout(() => r(null), 10000));
-        const realPreview = await Promise.race([previewDataPromise, timeoutPromise]);
-
-        if (realPreview) {
-          const pd = realPreview.data?.matchedText ? realPreview.data : realPreview;
-          // realPreview can be a reactive placeholder still mid-load (seen with
-          // isLoading: true and no canonicalUrl at all) — WhatsApp won't render a
-          // card without canonicalUrl. Start from our own OGS-scraped fields
-          // (always complete) and let WA's live data override only where it has
-          // an actual resolved (non-null/undefined) value; drop internal-only
-          // keys that were never meant to reach WWebJS.sendMessage.
-          const { isLoading: _isLoading, psp: _psp, ...pdRest } = pd || {};
-          const pdResolved = Object.fromEntries(
-            Object.entries(pdRest).filter(([, v]) => v !== null && v !== undefined),
-          );
-          const merged = {
-            title: preview.title,
-            description: preview.description,
-            canonicalUrl: preview.canonicalUrl || preview.matchedText,
-            matchedText: preview.matchedText,
-            richPreviewType: 0,
-            doNotPlayInline: true,
-            ...(preview.thumbnail ? { jpegThumbnail: base64ToBytes(preview.thumbnail) } : {}),
-            ...pdResolved,
-          };
-          const res = await (globalThis as any).WWebJS.sendMessage(chat, text, {
-            ...passthroughOpts,
-            ...merged,
-            preview: true,
-            subtype: 'url',
-            linkPreview: false, // prevent double getLinkPreview call
-          });
-          return {
-            id: (res as any)?.id?._serialized ?? null,
-            branch: 'wa-native' as const,
-            mergedKeys: Object.keys(merged),
-            mergedHasThumb: !!(merged.jpegThumbnail || (merged as any).thumbnail),
-            mergedCanonicalUrl: merged.canonicalUrl,
-          };
-        }
-
-        // Fallback: inject OGS fields with thumbnail (base64 JPEG, no data: prefix)
+        // WA's own headless getLinkPreview() never resolves inside Puppeteer
+        // (confirmed: always hits its own internal timeout) — go straight to
+        // the OGS-scraped fields, which are always complete and correct.
+        // NOTE: the jpegThumbnail image itself will not render in WhatsApp's UI —
+        // the visible preview image requires WA's server-side link-scrape upload
+        // (bucket t62.36144-24), which is only reachable through the same
+        // getLinkPreview() call that never resolves headlessly. Title/description/
+        // canonicalUrl render correctly without it.
         const res = await (globalThis as any).WWebJS.sendMessage(chat, text, {
           ...passthroughOpts,
           preview: true,
@@ -232,10 +189,10 @@ export async function sendWithPreview(
           richPreviewType: 0,
           doNotPlayInline: true,
           ...(preview.thumbnail ? { jpegThumbnail: base64ToBytes(preview.thumbnail) } : {}),
+          linkPreview: false, // prevent double getLinkPreview call
         });
         return {
           id: (res as any)?.id?._serialized ?? null,
-          branch: 'ogs-fallback' as const,
           hadThumbnail: preview.thumbnail !== null,
         };
       },

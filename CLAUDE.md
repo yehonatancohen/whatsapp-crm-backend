@@ -56,14 +56,15 @@ src/
 - For DIRECT_MESSAGE: builds `${cleanPhone}@c.us` chatId
 
 ## Deployment
-- **Server**: Oracle ARM64 (aarch64) at 130.110.238.248
-- **Access**: `ssh -i ~/.ssh/oracle-hitnagdut.key ubuntu@130.110.238.248`
-- **Domain**: https://api.parties247.co.il (Cloudflare tunnel → localhost:8080)
-- **Compose**: `/home/ubuntu/whatsapp-crm/docker-compose.yml`
-- **Images**: `yehonatancohen/whatsapp-crm-backend:latest` (DockerHub)
-- **Build**: clone repo → `docker build` on server → `docker push` → containers pick up via Watchtower
-- **WA sessions**: persisted in Docker volume `whatsapp-crm_wwebjs_auth`
+- **Server**: production x86_64 host at 178.104.95.136 (access via `sheder.sh` from the local WSL Ubuntu instance, or directly: `ssh root@178.104.95.136`)
+- **Domain**: https://api.parties247.co.il (Cloudflare tunnel, tunnel ID `c0d451c2-f6b5-449b-82ca-09d806f2230d`)
+- **Containers**: `parties247-api`, `parties247-worker`, `parties247-nginx`, `parties247-watchtower`
+- **Images**: `yehonatancohen/whatsapp-crm-backend:latest` (DockerHub) — **amd64 only**; the CircleCI pipeline (`.circleci/config.yml`) builds `--platform linux/amd64` on every push to `main` and pushes to this tag
+- **Build**: push to `main` → CircleCI builds + pushes image → Watchtower auto-pulls and recreates containers within ~60s
+- **WA sessions**: persisted in a Docker volume
 - **Frontend**: https://whatsapp-crm-frontend-plum.vercel.app (Vercel)
+
+**Note**: The Oracle ARM64 box (130.110.238.248) is an unrelated project. Do not build/push arm64 images to the shared `yehonatancohen/whatsapp-crm-backend:latest` tag — the real production server is amd64 and will crash (`exec format error`) if it pulls an arm64 image via Watchtower.
 
 ## Testing a Campaign (Manual)
 1. Log in to the frontend
