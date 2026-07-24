@@ -674,19 +674,13 @@ router.get('/:accountId/:chatId/messages/:messageId/media', async (req: Request,
 const sendSchema = z.object({
   body: z.string().min(1),
   quotedMessageId: z.string().optional(),
-  // TEMPORARY diagnostic flag — bypasses our custom sendWithPreview module and
-  // calls client.sendMessage(..., { linkPreview: true }) directly, exercising
-  // whatsapp-web.js's own patched native preview flow (patches/whatsapp-web.js+1.34.7.patch).
-  // Used to determine whether sendWithPreview itself is the regression. Remove
-  // once the investigation concludes either way.
-  nativePreviewTest: z.boolean().optional(),
 });
 
 // 3. Send message
 router.post('/:accountId/:chatId/send', validate(sendSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { accountId, chatId } = req.params;
-    const { body, quotedMessageId, nativePreviewTest } = req.body;
+    const { body, quotedMessageId } = req.body;
 
     const manager = ClientManager.getInstance();
     const instance = manager.getInstanceById(accountId);
@@ -706,16 +700,10 @@ router.post('/:accountId/:chatId/send', validate(sendSchema), async (req: Reques
       sendOptions.quotedMessageId = quotedMessageId;
     }
 
-    let msgId: string | null;
-    if (nativePreviewTest) {
-      const m = await client.sendMessage(chatId, body, { ...sendOptions, linkPreview: true } as any);
-      msgId = m?.id?._serialized ?? null;
-    } else {
-      // sendWithPreview handles OG scraping + thumbnail injection via pupPage.evaluate,
-      // bypassing WhatsApp Web's broken headless getLinkPreview(). Falls back to a
-      // plain client.sendMessage if no URL is present or scraping fails.
-      msgId = await sendWithPreview(client, chatId, body, sendOptions);
-    }
+    // sendWithPreview handles OG scraping + thumbnail injection via pupPage.evaluate,
+    // bypassing WhatsApp Web's broken headless getLinkPreview(). Falls back to a
+    // plain client.sendMessage if no URL is present or scraping fails.
+    const msgId = await sendWithPreview(client, chatId, body, sendOptions);
 
     res.json({
       id: msgId ?? '',

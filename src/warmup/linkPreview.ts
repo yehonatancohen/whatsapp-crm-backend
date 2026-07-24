@@ -154,6 +154,13 @@ export async function sendWithPreview(
         passthroughOpts: Record<string, unknown>;
       }) {
         /* eslint-disable @typescript-eslint/no-explicit-any */
+        // WA's jpegThumbnail field is raw bytes, not a base64 string — a real
+        // (compose-box-generated) preview carries a Uint8Array here. Passing the
+        // base64 string directly likely fails silently at the protobuf-encoding
+        // layer, dropping the whole preview while the text still sends fine.
+        const base64ToBytes = (b64: string): Uint8Array =>
+          Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+
         const wid = (globalThis as any)
           .require('WAWebWidFactory')
           .createWid(chatId);
@@ -194,7 +201,7 @@ export async function sendWithPreview(
             matchedText: preview.matchedText,
             richPreviewType: 0,
             doNotPlayInline: true,
-            ...(preview.thumbnail ? { jpegThumbnail: preview.thumbnail } : {}),
+            ...(preview.thumbnail ? { jpegThumbnail: base64ToBytes(preview.thumbnail) } : {}),
             ...pdResolved,
           };
           const res = await (globalThis as any).WWebJS.sendMessage(chat, text, {
@@ -224,7 +231,7 @@ export async function sendWithPreview(
           matchedText: preview.matchedText,
           richPreviewType: 0,
           doNotPlayInline: true,
-          ...(preview.thumbnail ? { jpegThumbnail: preview.thumbnail } : {}),
+          ...(preview.thumbnail ? { jpegThumbnail: base64ToBytes(preview.thumbnail) } : {}),
         });
         return {
           id: (res as any)?.id?._serialized ?? null,
