@@ -177,10 +177,29 @@ export async function sendWithPreview(
 
         if (realPreview) {
           const pd = realPreview.data?.matchedText ? realPreview.data : realPreview;
-          // Use WhatsApp's own result — thumbnail is server-generated and correctly formatted
+          // realPreview can be a reactive placeholder still mid-load (seen with
+          // isLoading: true and no canonicalUrl at all) — WhatsApp won't render a
+          // card without canonicalUrl. Start from our own OGS-scraped fields
+          // (always complete) and let WA's live data override only where it has
+          // an actual resolved (non-null/undefined) value; drop internal-only
+          // keys that were never meant to reach WWebJS.sendMessage.
+          const { isLoading: _isLoading, psp: _psp, ...pdRest } = pd || {};
+          const pdResolved = Object.fromEntries(
+            Object.entries(pdRest).filter(([, v]) => v !== null && v !== undefined),
+          );
+          const merged = {
+            title: preview.title,
+            description: preview.description,
+            canonicalUrl: preview.canonicalUrl || preview.matchedText,
+            matchedText: preview.matchedText,
+            richPreviewType: 0,
+            doNotPlayInline: true,
+            ...(preview.thumbnail ? { jpegThumbnail: preview.thumbnail } : {}),
+            ...pdResolved,
+          };
           const res = await (globalThis as any).WWebJS.sendMessage(chat, text, {
             ...passthroughOpts,
-            ...pd,
+            ...merged,
             preview: true,
             subtype: 'url',
             linkPreview: false, // prevent double getLinkPreview call
@@ -188,15 +207,9 @@ export async function sendWithPreview(
           return {
             id: (res as any)?.id?._serialized ?? null,
             branch: 'wa-native' as const,
-            // Diagnostics: which shape did realPreview actually have, and what
-            // ended up on the sent message's preview-relevant fields.
-            usedDotData: !!realPreview.data?.matchedText,
-            pdKeys: Object.keys(pd || {}),
-            pdHasTitle: !!pd?.title,
-            pdHasThumb: !!(pd?.jpegThumbnail || pd?.thumbnail),
-            pdHasCanonicalUrl: !!pd?.canonicalUrl,
-            resPreview: (res as any)?.preview,
-            resTitle: (res as any)?.title,
+            mergedKeys: Object.keys(merged),
+            mergedHasThumb: !!(merged.jpegThumbnail || (merged as any).thumbnail),
+            mergedCanonicalUrl: merged.canonicalUrl,
           };
         }
 
