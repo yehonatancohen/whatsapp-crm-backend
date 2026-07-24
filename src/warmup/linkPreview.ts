@@ -139,7 +139,7 @@ export async function sendWithPreview(
   const { linkPreview: _ignored, ...passthroughOpts } = opts;
 
   try {
-    const result: { id: string | null; branch: 'wa-native' | 'ogs-fallback'; hadThumbnail?: boolean } = await pupPage.evaluate(
+    const result: { id: string | null; branch: 'wa-native' | 'ogs-fallback'; hadThumbnail?: boolean } & Record<string, unknown> = await pupPage.evaluate(
       // Arrow function is NOT serialisable across pupPage.evaluate boundaries;
       // use a plain function expression so Puppeteer can stringify it.
       async function ({
@@ -185,7 +185,19 @@ export async function sendWithPreview(
             subtype: 'url',
             linkPreview: false, // prevent double getLinkPreview call
           });
-          return { id: (res as any)?.id?._serialized ?? null, branch: 'wa-native' as const };
+          return {
+            id: (res as any)?.id?._serialized ?? null,
+            branch: 'wa-native' as const,
+            // Diagnostics: which shape did realPreview actually have, and what
+            // ended up on the sent message's preview-relevant fields.
+            usedDotData: !!realPreview.data?.matchedText,
+            pdKeys: Object.keys(pd || {}),
+            pdHasTitle: !!pd?.title,
+            pdHasThumb: !!(pd?.jpegThumbnail || pd?.thumbnail),
+            pdHasCanonicalUrl: !!pd?.canonicalUrl,
+            resPreview: (res as any)?.preview,
+            resTitle: (res as any)?.title,
+          };
         }
 
         // Fallback: inject OGS fields with thumbnail (base64 JPEG, no data: prefix)
