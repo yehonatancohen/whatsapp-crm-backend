@@ -227,6 +227,18 @@ export class WhatsAppInstance {
               }
               if (!ChatCollection) return [];
 
+              // Multi-device groups address participants by @lid (linked identity),
+              // not the @c.us phone id `myId` is in. WA's own getChatModel() runs
+              // every participant id through toPn() before comparing against the
+              // client's own wid — without that, "am I this participant" always
+              // misses and isAdmin comes back false even for real admins.
+              let toPn: ((wid: any) => any) | undefined;
+              try {
+                toPn = g.window.require('WAWebLidMigrationUtils')?.toPn;
+              } catch {
+                toPn = undefined;
+              }
+
               const models: any[] = ChatCollection.getModelsArray?.() ?? ChatCollection._models ?? [];
               const result: Array<{ id: string; name: string; participantsCount: number; isAdmin: boolean }> = [];
 
@@ -240,7 +252,17 @@ export class WhatsAppInstance {
                     chat.groupMetadata.participants?.getModels?.() ??
                     chat.groupMetadata.participants?._models ??
                     (Array.isArray(chat.groupMetadata.participants) ? chat.groupMetadata.participants : []);
-                  const me = participants.find((p: any) => p.id?._serialized === myId);
+                  const me = participants.find((p: any) => {
+                    const pid = p.id?._serialized;
+                    if (!pid || !myId) return false;
+                    if (pid === myId) return true;
+                    if (!toPn) return false;
+                    try {
+                      return toPn(p.id)?._serialized === myId;
+                    } catch {
+                      return false;
+                    }
+                  });
 
                   result.push({
                     id: sid,
