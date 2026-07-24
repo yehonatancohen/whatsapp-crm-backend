@@ -237,7 +237,25 @@ export class WhatsAppInstance {
         logger.warn({ instanceId: this.id }, 'Browser session ended — marking DISCONNECTED');
         this.setStatus('DISCONNECTED', 'Browser session ended unexpectedly');
       } else {
-        logger.warn({ instanceId: this.id, err: errMsg }, 'getGroups failed');
+        // err.message alone has been unhelpfully short (e.g. "r") for some
+        // failures — capture more of the error's shape until we know why.
+        logger.warn(
+          {
+            instanceId: this.id,
+            err: errMsg,
+            errType: err?.constructor?.name,
+            errStack: err instanceof Error ? err.stack : undefined,
+            errKeys: err && typeof err === 'object' ? Object.keys(err) : undefined,
+            errJson: (() => {
+              try {
+                return JSON.stringify(err);
+              } catch {
+                return undefined;
+              }
+            })(),
+          },
+          'getGroups failed',
+        );
       }
       return [];
     }
